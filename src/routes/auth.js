@@ -4,13 +4,13 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 const { authenticateJWT } = require('../middleware/auth');
-const { isValidEmail, isValidUsername, isValidPhoneNumber, isValidPassword, isValidName, isValidAddress, isValidCityCountry } = require('../utils/validation');
+const { isValidEmail, isValidUsername, isValidPhoneNumber, isValidPassword, isValidName, isValidAddress, isValidCityCountry, isValidZipcode } = require('../utils/validation');
 
 const router = express.Router();
 
 // Register
 router.post('/register', async (req, res) => {
-  const { email, username, password, phone_number, first_name, last_name, address, city, country } = req.body;
+  const { email, username, password, phone_number, first_name, last_name, address, city, zipcode } = req.body;
   const errors = [];
 
   // Input validation
@@ -27,7 +27,7 @@ router.post('/register', async (req, res) => {
   if (last_name && !isValidName(last_name)) errors.push('Apellido inválido (2-50 caracteres, solo letras y espacios)');
   if (address && !isValidAddress(address)) errors.push('Dirección inválida (5-100 caracteres)');
   if (city && !isValidCityCountry(city)) errors.push('Ciudad inválida (2-50 caracteres, solo letras y espacios)');
-  if (country && !isValidCityCountry(country)) errors.push('País inválido (2-50 caracteres, solo letras y espacios)');
+  if (zipcode && !isValidZipcode(zipcode)) errors.push('Código postal inválido (5-10 caracteres, alfanumérico)');
 
   if (errors.length > 0) {
     return res.status(400).json({ errors });
@@ -74,8 +74,9 @@ router.post('/register', async (req, res) => {
         business_name: username.charAt(0).toUpperCase() + username.slice(1),
         address: address || null,
         city: city || null,
-        country: country || null,
+        zipcode: zipcode || null,
         description: null,
+        logo_url: null,
         created_at: new Date(),
         updated_at: new Date(),
       },
@@ -84,7 +85,7 @@ router.post('/register', async (req, res) => {
     // Create JWT
     const token = jwt.sign(
       { id: user.id, email: normalizedEmail },
-      process.env.JWT,
+      process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
 
@@ -108,11 +109,11 @@ router.post('/register', async (req, res) => {
 
 // Login
 router.post('/', async (req, res) => {
-  const { identifier, email, password } = req.body;
+  const { identifier, password } = req.body;
 
   // Input validation
   if (!identifier?.trim() || !password) {
-    return res.status(404).json({ error: 'Identificador de usuario y contraseña son obligatorios' });
+    return res.status(400).json({ error: 'Identificador y contraseña son obligatorios' });
   }
 
   try {
@@ -121,7 +122,7 @@ router.post('/', async (req, res) => {
       where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
     });
     if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales inválidas o cuenta inactiva' });
+      return res.status(401).json({ error: 'Credenciales incorrectas o cuenta inactiva' });
     }
 
     // Verify password
@@ -139,7 +140,7 @@ router.post('/', async (req, res) => {
     // Create JWT
     const token = jwt.sign(
       { id: user.id, email: user.email },
-      process.env.JWT,
+      process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
 

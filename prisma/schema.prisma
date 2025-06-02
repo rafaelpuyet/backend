@@ -30,10 +30,10 @@ model businesses {
   business_name String
   description   String?
   logo_url      String?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
-  user          users    @relation(fields: [username], references: [username])
   address       String?
   city          String?
   zipcode       String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+  user          users    @relation(fields: [username], references: [username])
 }
