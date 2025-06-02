@@ -96,15 +96,6 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({
       token,
-      user: {
-        id: user.id,
-        email: normalizedEmail,
-        username: normalizedUsername,
-        phone_number,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        plan: user.plan,
-      },
     });
   } catch (error) {
     console.error('Error en registro:', error.message, error.stack);
@@ -156,15 +147,6 @@ router.post('/', async (req, res) => {
 
     res.json({
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        username: user.username,
-        phone_number: user.phone_number,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        plan: user.plan,
-      },
     });
   } catch (error) {
     console.error('Error en login:', error.message, error.stack);
