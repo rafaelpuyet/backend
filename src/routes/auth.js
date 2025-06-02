@@ -4,13 +4,13 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 const { authenticateJWT } = require('../middleware/auth');
-const { isValidEmail, isValidUsername, isValidPhoneNumber, isValidPassword } = require('../utils/validation');
+const { isValidEmail, isValidUsername, isValidPhoneNumber, isValidPassword, isValidName, isValidAddress, isValidCityCountry } = require('../utils/validation');
 
 const router = express.Router();
 
 // Register
 router.post('/register', async (req, res) => {
-  const { email, username, password, phone_number } = req.body;
+  const { email, username, password, phone_number, first_name, last_name, address, city, country } = req.body;
   const errors = [];
 
   // Input validation
@@ -23,6 +23,11 @@ router.post('/register', async (req, res) => {
   if (username && !isValidUsername(username)) errors.push('Nombre de usuario inválido (3-20 caracteres, solo letras, números y guiones)');
   if (password && !isValidPassword(password)) errors.push('La contraseña debe tener al menos 8 caracteres, incluyendo una letra y un número');
   if (phone_number && !isValidPhoneNumber(phone_number)) errors.push('Número de teléfono inválido (formato: +56912345678)');
+  if (first_name && !isValidName(first_name)) errors.push('Nombre inválido (2-50 caracteres, solo letras y espacios)');
+  if (last_name && !isValidName(last_name)) errors.push('Apellido inválido (2-50 caracteres, solo letras y espacios)');
+  if (address && !isValidAddress(address)) errors.push('Dirección inválida (5-100 caracteres)');
+  if (city && !isValidCityCountry(city)) errors.push('Ciudad inválida (2-50 caracteres, solo letras y espacios)');
+  if (country && !isValidCityCountry(country)) errors.push('País inválido (2-50 caracteres, solo letras y espacios)');
 
   if (errors.length > 0) {
     return res.status(400).json({ errors });
@@ -32,7 +37,7 @@ router.post('/register', async (req, res) => {
   const normalizedUsername = username.toLowerCase();
 
   try {
-    // Check if email, username, or phone_number exists
+    // Check for existing email, username, or phone_number
     const existingUser = await prisma.users.findFirst({
       where: { OR: [{ email: normalizedEmail }, { username: normalizedUsername }, { phone_number }] },
     });
@@ -54,17 +59,23 @@ router.post('/register', async (req, res) => {
         password: hashedPassword,
         phone_number,
         plan: 'free',
+        first_name: first_name || '',
+        last_name: last_name || '',
         created_at: new Date(),
         updated_at: new Date(),
         is_active: true,
       },
     });
 
-    // Optionally create business (default business_name from username)
+    // Auto-create business
     await prisma.businesses.create({
       data: {
         username: normalizedUsername,
         business_name: username.charAt(0).toUpperCase() + username.slice(1),
+        address: address || null,
+        city: city || null,
+        country: country || null,
+        description: null,
         created_at: new Date(),
         updated_at: new Date(),
       },
@@ -73,27 +84,35 @@ router.post('/register', async (req, res) => {
     // Create JWT
     const token = jwt.sign(
       { id: user.id, email: normalizedEmail },
-      process.env.JWT_SECRET,
+      process.env.JWT,
       { expiresIn: '1d' }
     );
 
     res.status(201).json({
       token,
-      user: { id: user.id, email: normalizedEmail, username: normalizedUsername, phone_number, plan: user.plan },
+      user: {
+        id: user.id,
+        email: normalizedEmail,
+        username: normalizedUsername,
+        phone_number,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        plan: user.plan,
+      },
     });
   } catch (error) {
     console.error('Error en registro:', error.message, error.stack);
-    res.status(500).json({ error: 'Error interno al registrar el usuario' });
+    res.status(500).json({ error: 'Error al registrar el usuario' });
   }
 });
 
 // Login
-router.post('/login', async (req, res) => {
-  const { identifier, password } = req.body;
+router.post('/', async (req, res) => {
+  const { identifier, email, password } = req.body;
 
   // Input validation
   if (!identifier?.trim() || !password) {
-    return res.status(400).json({ error: 'Identificador y contraseña son obligatorios' });
+    return res.status(404).json({ error: 'Identificador de usuario y contraseña son obligatorios' });
   }
 
   try {
@@ -102,7 +121,7 @@ router.post('/login', async (req, res) => {
       where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
     });
     if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales incorrectas o cuenta inactiva' });
+      return res.status(401).json({ error: 'Credenciales inválidas o cuenta inactiva' });
     }
 
     // Verify password
@@ -120,7 +139,7 @@ router.post('/login', async (req, res) => {
     // Create JWT
     const token = jwt.sign(
       { id: user.id, email: user.email },
-      process.env.JWT_SECRET,
+      process.env.JWT,
       { expiresIn: '1d' }
     );
 
@@ -131,6 +150,8 @@ router.post('/login', async (req, res) => {
         email: user.email,
         username: user.username,
         phone_number: user.phone_number,
+        first_name: user.first_name,
+        last_name: user.last_name,
         plan: user.plan,
       },
     });
@@ -150,6 +171,8 @@ router.get('/user', authenticateJWT, async (req, res) => {
         email: true,
         username: true,
         phone_number: true,
+        first_name: true,
+        last_name: true,
         plan: true,
         created_at: true,
         updated_at: true,
