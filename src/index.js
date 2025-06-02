@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const authRoutes = require('./routes/auth');
+const businessRoutes = require('./routes/business');
+const { registerLimiter } = require('./middleware/rateLimit');
 
 // Load environment variables
 dotenv.config();
@@ -16,6 +18,10 @@ app.use(express.json());
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/business', businessRoutes);
+
+// Apply rate limiting to register endpoint
+app.use('/api/auth/register', registerLimiter);
 
 // Health check
 app.get('/', (req, res) => {
