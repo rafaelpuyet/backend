@@ -10,6 +10,11 @@ const router = express.Router();
 
 // Register
 router.post('/register', async (req, res) => {
+  // Check if req.body is defined
+  if (!req.body) {
+    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
+  }
+
   const { email, username, password, phone_number, first_name, last_name, address, city, zipcode } = req.body;
   const errors = [];
 
@@ -109,6 +114,11 @@ router.post('/register', async (req, res) => {
 
 // Login
 router.post('/', async (req, res) => {
+  // Check if req.body is defined
+  if (!req.body) {
+    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
+  }
+
   const { identifier, password } = req.body;
 
   // Input validation
