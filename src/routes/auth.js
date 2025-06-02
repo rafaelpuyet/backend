@@ -132,7 +132,7 @@ router.post('/', async (req, res) => {
       where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
     });
     if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales incorrectas o cuenta inactiva' });
+      return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
     // Verify password
