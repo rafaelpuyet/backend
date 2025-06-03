@@ -10,7 +10,6 @@ const router = express.Router();
 
 // Register
 router.post('/register', async (req, res) => {
-  // Check if req.body is defined
   if (!req.body) {
     return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
   }
@@ -18,7 +17,6 @@ router.post('/register', async (req, res) => {
   const { email, username, password, phone_number, first_name, last_name, address, city, zipcode } = req.body;
   const errors = [];
 
-  // Input validation
   if (!email?.trim()) errors.push('El correo es obligatorio');
   if (!username?.trim()) errors.push('El nombre de usuario es obligatorio');
   if (!password) errors.push('La contraseña es obligatoria');
@@ -42,7 +40,6 @@ router.post('/register', async (req, res) => {
   const normalizedUsername = username.toLowerCase();
 
   try {
-    // Check for existing email, username, or phone_number
     const existingUser = await prisma.users.findFirst({
       where: { OR: [{ email: normalizedEmail }, { username: normalizedUsername }, { phone_number }] },
     });
@@ -53,10 +50,8 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ errors });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
     const user = await prisma.users.create({
       data: {
         email: normalizedEmail,
@@ -72,7 +67,6 @@ router.post('/register', async (req, res) => {
       },
     });
 
-    // Auto-create business
     await prisma.businesses.create({
       data: {
         username: normalizedUsername,
@@ -87,9 +81,8 @@ router.post('/register', async (req, res) => {
       },
     });
 
-    // Create JWT
     const token = jwt.sign(
-      { id: user.id, email: normalizedEmail },
+      { id: user.id },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -105,42 +98,36 @@ router.post('/register', async (req, res) => {
 
 // Login
 router.post('/', async (req, res) => {
-  // Check if req.body is defined
   if (!req.body) {
     return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
   }
 
   const { identifier, password } = req.body;
 
-  // Input validation
   if (!identifier?.trim() || !password) {
     return res.status(400).json({ error: 'Identificador y contraseña son obligatorios' });
   }
 
   try {
-    // Find user by email or username
     const user = await prisma.users.findFirst({
       where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
     });
     if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales incorrectas' });
+      return res.status(401).json({ error: 'Credenciales incorrectas o cuenta inactiva' });
     }
 
-    // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
-    // Update last_login
     await prisma.users.update({
       where: { id: user.id },
       data: { last_login: new Date() },
     });
 
-    // Create JWT
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { id: user.id },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -157,6 +144,7 @@ router.post('/', async (req, res) => {
 // Get user data
 router.get('/user', authenticateJWT, async (req, res) => {
   try {
+    // Fetch user data including related business
     const user = await prisma.users.findUnique({
       where: { id: req.user.id },
       select: {
@@ -171,12 +159,41 @@ router.get('/user', authenticateJWT, async (req, res) => {
         updated_at: true,
         is_active: true,
         last_login: true,
+        businesses: {
+          select: {
+            id: true,
+            business_name: true,
+            description: true,
+            logo_url: true,
+            address: true,
+            city: true,
+            zipcode: true,
+            created_at: true,
+            updated_at: true,
+          },
+        },
       },
     });
+
     if (!user) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    res.json(user);
+
+    // Structure response
+    res.json({
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      phone_number: user.phone_number,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      plan: user.plan,
+      created_at: user.created_at,
+      updated_at: user.updated_at,
+      is_active: user.is_active,
+      last_login: user.last_login,
+      business: user.businesses || null,
+    });
   } catch (error) {
     console.error('Error al obtener usuario:', error.message, error.stack);
     res.status(500).json({ error: 'Error al obtener datos del usuario' });
