@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const businessRoutes = require('./routes/business');
 const scheduleRoutes = require('./routes/schedules');
 const profileRoutes = require('./routes/profile');
+const serviceRoutes = require('./routes/services');
 const { registerLimiter } = require('./middleware/rateLimit');
 
 // Load environment variables
@@ -23,6 +24,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/business', businessRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/services', serviceRoutes);
 
 // Apply rate limiting to register endpoint
 app.use('/api/auth/register', registerLimiter);
