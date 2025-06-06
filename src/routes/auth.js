@@ -1,201 +1,169 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 const { PrismaClient } = require('@prisma/client');
-const authenticate = require('../middleware/authenticate');
+const { registerSchema, loginSchema } = require('../utils/validation');
+const { sendEmail } = require('../utils/email');
+const { resendLimiter } = require('../middleware/rateLimit');
+
 const prisma = new PrismaClient();
 const router = express.Router();
 
-// Configuración de Nodemailer
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// Registro de usuario
 router.post('/register', async (req, res, next) => {
-  const { email, password, name, phone, businessName, logo } = req.body;
-
   try {
-    // Validar entrada
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Correo y contraseña son obligatorios' });
-    }
+    const { error } = registerSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
 
-    // Verificar si el usuario ya existe
-    const existingUser = await prisma.user.findUnique({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ error: 'El correo ya está registrado' });
-    }
+    const { email, password, name, phone, username, businessName, logo, isBusiness } = req.body;
+    const normalizedUsername = username.toLowerCase();
 
-    // Hash de la contraseña
+    const existingUser = await prisma.user.findFirst({
+      where: { OR: [{ email }, { username: normalizedUsername }] }
+    });
+    if (existingUser) return res.status(400).json({ error: 'Email or username already exists' });
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Generar token de verificación
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutos
-
-    // Crear usuario, negocio y token en una transacción
-    const user = await prisma.$transaction(async (prisma) => {
-      const newBusiness = await prisma.business.create({
-        data: {
-          name: businessName || `Negocio de ${name || 'Usuario'}`,
-          logo: logo || null,
-        },
-      });
-
-      const newUser = await prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          name,
-          phone,
-          businessId: newBusiness.id,
-        },
-      });
-
-      await prisma.verificationToken.create({
-        data: {
-          token: verificationToken,
-          userId: newUser.id,
-          expiresAt,
-        },
-      });
-
-      return newUser;
+    const user = await prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        name,
+        phone,
+        username: normalizedUsername,
+        isBusiness
+      }
     });
 
-    // Enviar correo de verificación
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify?token=${verificationToken}`;
-    await transporter.sendMail({
-      from: `"Agenda App" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: 'Activa tu cuenta',
-      html: `
-        <h1>Bienvenido a Agenda App</h1>
-        <p>Por favor, haz clic en el siguiente enlace para activar tu cuenta:</p>
-        <a href="${verificationUrl}">Activar cuenta</a>
-        <p>Este enlace expirará en 30 minutos.</p>
-      `,
+    const business = await prisma.business.create({
+      data: {
+        userId: user.id,
+        name: businessName || `Agenda de ${name || normalizedUsername}`,
+        logo
+      }
     });
 
-    // Generar token JWT
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    if (!isBusiness) {
+      await prisma.worker.create({
+        data: {
+          businessId: business.id,
+          workerName: name,
+          isOwner: true
+        }
+      });
+    } else {
+      const branch = await prisma.branch.create({
+        data: {
+          businessId: business.id,
+          name: 'Sucursal Principal'
+        }
+      });
 
-    res.status(201).json({ token });
-  } catch (error) {
-    next(error);
+      await prisma.schedule.create({
+        data: {
+          businessId: business.id,
+          branchId: branch.id,
+          dayOfWeek: 1, // Lunes
+          startTime: '09:00:00',
+          endTime: '17:00:00',
+          slotDuration: 30
+        }
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    await prisma.verificationToken.deleteMany({ where: { userId: user.id } });
+    await prisma.verificationToken.create({
+      data: {
+        token,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000) // 30 minutos
+      }
+    });
+
+    await sendEmail(email, 'Verify your account', `${process.env.FRONTEND_URL}/verify?token=${token}`);
+
+    const jwtToken = jwt.sign({ userId: user.id, isBusiness, username: normalizedUsername }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token: jwtToken });
+  } catch (err) {
+    next(err);
   }
 });
 
-// Verificación de cuenta
 router.get('/verify', async (req, res, next) => {
-  const { token } = req.query;
-
   try {
-    // Buscar token de verificación
-    const verificationToken = await prisma.verificationToken.findUnique({
-      where: { token },
-      include: { user: true },
-    });
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ error: 'Token required' });
 
-    if (!verificationToken) {
-      return res.status(400).json({ error: 'Token inválido' });
+    const verificationToken = await prisma.verificationToken.findUnique({ where: { token } });
+    if (!verificationToken) return res.status(400).json({ error: 'Invalid token' });
+    if (verificationToken.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Token expired. Please request a new one.' });
     }
 
-    if (new Date() > verificationToken.expiresAt) {
-      // Eliminar usuario y negocio si el token ha expirado
-      await prisma.$transaction([
-        prisma.business.deleteMany({ where: { id: verificationToken.user.businessId } }),
-        prisma.user.delete({ where: { id: verificationToken.userId } }),
-      ]);
-      return res.status(400).json({ error: 'El token ha expirado' });
-    }
-
-    // Activar la cuenta
     await prisma.user.update({
       where: { id: verificationToken.userId },
-      data: { isVerified: true },
+      data: { isVerified: true }
     });
 
-    // Eliminar el token de verificación
     await prisma.verificationToken.delete({ where: { token } });
-
-    res.status(200).json({ message: 'Cuenta verificada exitosamente' });
-  } catch (error) {
-    next(error);
+    res.json({ message: 'Account verified' });
+  } catch (err) {
+    next(err);
   }
 });
 
-// Login de usuario
+router.post('/resend-verification', resendLimiter, async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+
+    const user = await prisma.user.findUnique({ where: { email, isVerified: false } });
+    if (!user) return res.status(400).json({ error: 'User not found or already verified' });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    await prisma.verificationToken.deleteMany({ where: { userId: user.id } });
+    await prisma.verificationToken.create({
+      data: {
+        token,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000)
+      }
+    });
+
+    await sendEmail(email, 'Verify your account', `${process.env.FRONTEND_URL}/verify?token=${token}`);
+    res.json({ message: 'Verification email resent' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/login', async (req, res, next) => {
-  const { email, password } = req.body;
-
   try {
-    // Validar entrada
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Correo y contraseña son obligatorios' });
-    }
+    const { error } = loginSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
 
-    // Buscar usuario
+    const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      return res.status(400).json({ error: 'Credenciales inválidas' });
-    }
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+    if (!user.isVerified) return res.status(403).json({ error: 'Account not verified' });
 
-    // Verificar si la cuenta está verificada
-    if (!user.isVerified) {
-      return res.status(403).json({ error: 'Cuenta no verificada. Por favor, verifica tu correo.' });
-    }
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // Verificar contraseña
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(400).json({ error: 'Credenciales inválidas' });
-    }
-
-    // Generar token JWT
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-    res.status(200).json({ token });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Obtener datos del usuario autenticado
-router.get('/me', authenticate, async (req, res, next) => {
-  const userId = req.user.userId;
-
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { business: true },
+    const refreshToken = crypto.randomBytes(32).toString('hex');
+    await prisma.refreshToken.create({
+      data: {
+        token: refreshToken,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 días
+      }
     });
 
-    if (!user) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
-    }
-
-    res.status(200).json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      phone: user.phone,
-      business: {
-        name: user.business?.name || null,
-        logo: user.business?.logo || null,
-      },
-    });
-  } catch (error) {
-    next(error);
+    const token = jwt.sign({ userId: user.id, isBusiness: user.isBusiness, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token, refreshToken });
+  } catch (err) {
+    next(err);
   }
 });
 

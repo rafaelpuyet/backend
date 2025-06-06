@@ -1,71 +1,62 @@
-// server/src/index.js
 const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
 const authRoutes = require('./routes/auth');
 const businessRoutes = require('./routes/business');
-const scheduleRoutes = require('./routes/schedules');
-const profileRoutes = require('./routes/profile');
-const serviceRoutes = require('./routes/services');
-const { registerLimiter } = require('./middleware/rateLimit');
+const publicRoutes = require('./routes/public');
+const userRoutes = require('./routes/user');
+const appointmentRoutes = require('./routes/appointments');
 
-// Load environment variables
-dotenv.config();
-
+const prisma = new PrismaClient();
 const app = express();
-const PORT = process.env.PORT || 8000;
 
-// Middleware
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3000' }));
 app.use(express.json());
 
-// Routes
-app.use('/api/', authRoutes);
-app.use('/api/business', businessRoutes);
-app.use('/api/schedules', scheduleRoutes);
-app.use('/api/profile', profileRoutes);
-app.use('/api/services', serviceRoutes);
+// Rutas
+app.use('/auth', authRoutes);
+app.use('/business', businessRoutes);
+app.use('/public', publicRoutes);
+app.use('/user', userRoutes);
+app.use('/appointments', appointmentRoutes);
 
-// Apply rate limiting to register endpoint
-app.use('/api/auth/register', registerLimiter);
-
-// Cron job para eliminar usuarios no verificados después de 30 minutos
-cron.schedule('*/5 * * * *', async () => {
+// Cron job para limpieza (implementación inicial)
+cron.schedule('0 * * * *', async () => {
   try {
-    const expired = await prisma.verificationToken.findMany({
+    console.log('Running cleanup job');
+    await prisma.user.deleteMany({
       where: {
-        expiresAt: { lte: new Date() },
-        user: { isVerified: false },
-      },
-      include: { user: true },
+        isVerified: false,
+        verificationTokens: {
+          some: {
+            expiresAt: { lt: new Date() }
+          }
+        },
+        createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+      }
     });
-
-    for (const token of expired) {
-      await prisma.$transaction([
-        prisma.business.deleteMany({ where: { id: token.user.businessId } }),
-        prisma.user.delete({ where: { id: token.userId } }),
-      ]);
-    }
-    console.log('Usuarios no verificados eliminados:', expired.length);
-  } catch (error) {
-    console.error('Error en cron job:', error);
+    console.log('Cleanup completed');
+  } catch (err) {
+    console.error('Cleanup job failed:', err);
   }
 });
 
-// Health check
-app.get('/', (req, res) => {
-  res.json({ message: 'API de TuApp funcionando' });
+// Manejo global de errores
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(err.status || 500).json({
+    error: process.env.NODE_ENV === 'production' ? 'Internal Server Error' : err.message
+  });
 });
 
-// Start server
+// Iniciar servidor
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('Cerrando servidor...');
+// Manejo de cierre graceful
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Closing server...');
+  await prisma.$disconnect();
   process.exit(0);
 });

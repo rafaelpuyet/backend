@@ -1,110 +1,184 @@
-// server/src/routes/business.js
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
+const { scheduleSchema } = require('../utils/validation');
 const authenticate = require('../middleware/authenticate');
+
 const prisma = new PrismaClient();
 const router = express.Router();
 
-// Create or update business details
-router.post('/', authenticate, async (req, res) => {
-  const { business_name, description, logo_url, address, city, zipcode } = req.body;
-
-  // Input validation
-  if (!business_name) {
-    return res.status(400).json({ error: 'El nombre del negocio es obligatorio' });
-  }
-
-  try {
-    // Check if business exists for the user
-    const existingBusiness = await prisma.businesses.findUnique({
-      where: { username: req.user.username },
-    });
-
-    let business;
-    if (existingBusiness) {
-      // Update existing business
-      business = await prisma.businesses.update({
-        where: { username: req.user.username },
-        data: {
-          business_name,
-          description: description || null,
-          logo_url: logo_url || null,
-          address: address || null,
-          city: city || null,
-          zipcode: zipcode || null,
-          updated_at: new Date(),
-        },
-      });
-    } else {
-      // Create new business
-      business = await prisma.businesses.create({
-        data: {
-          username: req.user.username,
-          business_name,
-          description: description || null,
-          logo_url: logo_url || null,
-          address: address || null,
-          city: city || null,
-          zipcode: zipcode || null,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-      });
-    }
-
-    res.status(existingBusiness ? 200 : 201).json(business);
-  } catch (error) {
-    console.error('Error al crear/actualizar negocio:', error);
-    res.status(500).json({ error: 'Error al gestionar los datos del negocio' });
-  }
-});
-
-// Get business details
-router.get('/', authenticate, async (req, res) => {
-  try {
-    const business = await prisma.businesses.findUnique({
-      where: { username: req.user.username },
-    });
-    if (!business) {
-      return res.status(404).json({ error: 'Negocio no encontrado' });
-    }
-    res.json(business);
-  } catch (error) {
-    console.error('Error al obtener negocio:', error);
-    res.status(500).json({ error: 'Error al obtener datos del negocio' });
-  }
-});
-
 router.put('/update', authenticate, async (req, res, next) => {
-  const { name, logo } = req.body;
-  const userId = req.user.userId;
-
   try {
-    // Buscar el negocio asociado al usuario
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { business: true },
+    const { error } = Joi.object({
+      name: Joi.string().max(100).pattern(/^[a-zA-ZÀ-ÿ\s-]+$/).optional(),
+      logo: Joi.string().max(255).optional(),
+      timezone: Joi.string().max(50).optional()
+    }).validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
+
+    const { name, logo, timezone } = req.body;
+    const userId = req.user.userId;
+
+    const business = await prisma.business.update({
+      where: { userId },
+      data: { name, logo, timezone }
     });
 
-    if (!user || !user.business) {
-      return res.status(404).json({ error: 'Negocio no encontrado' });
+    await prisma.auditLog.create({
+      data: { action: 'update', entity: 'Business', entityId: business.id, userId }
+    });
+
+    res.json({ token: req.headers.authorization.split(' ')[1] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/branches', authenticate, async (req, res, next) => {
+  try {
+    if (!req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
+
+    const { error } = Joi.object({
+      name: Joi.string().max(100).required(),
+      address: Joi.string().max(255).optional()
+    }).validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
+
+    const { name, address } = req.body;
+    const userId = req.user.userId;
+    const business = await prisma.business.findFirst({ where: { userId } });
+
+    const branch = await prisma.branch.create({
+      data: {
+        businessId: business.id,
+        name,
+        address
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: { action: 'create', entity: 'Branch', entityId: branch.id, userId }
+    });
+
+    res.json({ token: req.headers.authorization.split(' ')[1] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/workers', authenticate, async (req, res, next) => {
+  try {
+    const { error } = Joi.object({
+      branchId: Joi.number().optional(),
+      name: Joi.string().max(255).pattern(/^[a-zA-ZÀ-ÿ\s-]+$/).required()
+    }).validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
+
+    const { branchId, name } = req.body;
+    const userId = req.user.userId;
+    const business = await prisma.business.findFirst({ where: { userId } });
+
+    if (branchId && !req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
+    if (branchId) {
+      const branch = await prisma.branch.findUnique({ where: { id: branchId, businessId: business.id } });
+      if (!branch) return res.status(404).json({ error: 'Branch not found' });
     }
 
-    // Actualizar datos del negocio
-    await prisma.business.update({
-      where: { id: user.businessId },
+    const worker = await prisma.worker.create({
       data: {
-        name: name || user.business.name,
-        logo: logo || user.business.logo,
-      },
+        businessId: business.id,
+        branchId,
+        workerName: name
+      }
     });
 
-    // Generar nuevo token
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    await prisma.auditLog.create({
+      data: { action: 'create', entity: 'Worker', entityId: worker.id, userId }
+    });
 
-    res.status(200).json({ token });
-  } catch (error) {
-    next(error);
+    res.json({ token: req.headers.authorization.split(' ')[1] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/workers/:id', authenticate, async(req, res, next) => {
+  try{
+    const workerId = parseInt(req.params.id);
+    const userId = req.user.userId;
+    const worker = await prisma.worker.findUnique({
+      where: { id: workerId }
+    });
+
+    if (!worker) return res.status(404).json({ error: 'Worker not found' });
+    if (worker.isOwner) return res.status(403).json({ error: 'Cannot delete owner worker' });
+
+    const business = await prisma.business.findFirst({ where: { userId } });
+    if (worker.businessId !== business.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    await prisma.worker.delete({ where: { id: workerId } });
+
+    await prisma.auditLog.create({
+      data: { action: 'delete', entity: 'Worker', entityId: workerId, userId }
+    });
+
+    res.json({ message: 'Worker deleted', token: req.headers.authorization.split(' ')[1] });
+  }
+  catch (err) {
+    next(err);
+  }
+});
+
+router.post('/schedules', authenticate, async (req, res, next) => {
+  try {
+    const { error } = scheduleSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
+
+    const { branchId, workerId, dayOfWeek, startTime, endTime, slotDuration } = req.body;
+    const userId = req.user.userId;
+    const business = await prisma.business.findFirst({ where: { userId } });
+
+    if (branchId && !req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
+    if (branchId) {
+      const branch = await prisma.branch.findUnique({ where: { id: branchId, businessId: business.id } });
+      if (!branch) return res.status(404).json({ error: 'Branch not found' });
+    }
+    if (workerId) {
+      const worker = await prisma.worker.findUnique({ where: { id: workerId, businessId: business.id } });
+      if (!worker) return res.status(404).json({ error: 'Worker not found' });
+    }
+
+    const conflictingSchedule = await prisma.schedule.findFirst({
+      where: {
+        businessId: business.id,
+        workerId,
+        dayOfWeek,
+        OR: [
+          { startTime: { lte: endTime }, endTime: { gte: startTime } },
+          { startTime: { gte: startTime }, endTime: { lte: endTime } }
+        ]
+      }
+    });
+    if (conflictSchedule) return res.status(400).json({ error: 'Overlapping schedule exists' });
+
+    const schedule = await prisma.schedule.create({
+      data: {
+        businessId: business.id,
+        branchId,
+        workerId,
+        dayOfWeek,
+        startTime,
+        endTime,
+        slotDuration
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: { action: 'create', entity: 'Schedule', entityId: schedule.id, userId }
+    });
+
+    res.json({ token: req.headers.authorization.split(' ')[1] });
+  } catch (err) {
+    next(err);
   }
 });
 
