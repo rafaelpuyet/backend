@@ -1,202 +1,199 @@
-// server/src/routes/auth.js
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const prisma = require('../config/prisma');
-const { authenticateJWT } = require('../middleware/auth');
-const { isValidEmail, isValidUsername, isValidPhoneNumber, isValidPassword, isValidName, isValidAddress, isValidCityCountry, isValidZipcode } = require('../utils/validation');
-
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
+const { PrismaClient } = require('@prisma/client');
+const authenticate = require('../middleware/authenticate');
+const prisma = new PrismaClient();
 const router = express.Router();
 
-// Register
-router.post('/register', async (req, res) => {
-  if (!req.body) {
-    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
-  }
+// Configuración de Nodemailer
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
-  const { email, username, password, phone_number, first_name, last_name, address, city, zipcode } = req.body;
-  const errors = [];
-
-  if (!email?.trim()) errors.push('El correo es obligatorio');
-  if (!username?.trim()) errors.push('El nombre de usuario es obligatorio');
-  if (!password) errors.push('La contraseña es obligatoria');
-  if (!phone_number?.trim()) errors.push('El número de teléfono es obligatorio');
-
-  if (email && !isValidEmail(email)) errors.push('Correo electrónico inválido');
-  if (username && !isValidUsername(username)) errors.push('Nombre de usuario inválido (3-20 caracteres, solo letras, números y guiones)');
-  if (password && !isValidPassword(password)) errors.push('La contraseña debe tener al menos 8 caracteres, incluyendo una letra y un número');
-  if (phone_number && !isValidPhoneNumber(phone_number)) errors.push('Número de teléfono inválido (formato: +56912345678)');
-  if (first_name && !isValidName(first_name)) errors.push('Nombre inválido (2-50 caracteres, solo letras y espacios)');
-  if (last_name && !isValidName(last_name)) errors.push('Apellido inválido (2-50 caracteres, solo letras y espacios)');
-  if (address && !isValidAddress(address)) errors.push('Dirección inválida (5-100 caracteres)');
-  if (city && !isValidCityCountry(city)) errors.push('Ciudad inválida (2-50 caracteres, solo letras y espacios)');
-  if (zipcode && !isValidZipcode(zipcode)) errors.push('Código postal inválido (5-10 caracteres, alfanumérico)');
-
-  if (errors.length > 0) {
-    return res.status(400).json({ errors });
-  }
-
-  const normalizedEmail = email.toLowerCase();
-  const normalizedUsername = username.toLowerCase();
+// Registro de usuario
+router.post('/register', async (req, res, next) => {
+  const { email, password, name, phone, businessName, logo } = req.body;
 
   try {
-    const existingUser = await prisma.users.findFirst({
-      where: { OR: [{ email: normalizedEmail }, { username: normalizedUsername }, { phone_number }] },
-    });
-    if (existingUser) {
-      if (existingUser.email === normalizedEmail) errors.push('El correo ya está registrado');
-      if (existingUser.username === normalizedUsername) errors.push('El nombre de usuario ya está en uso');
-      if (existingUser.phone_number === phone_number) errors.push('El número de teléfono ya está registrado');
-      return res.status(400).json({ errors });
+    // Validar entrada
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Correo y contraseña son obligatorios' });
     }
 
+    // Verificar si el usuario ya existe
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'El correo ya está registrado' });
+    }
+
+    // Hash de la contraseña
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await prisma.users.create({
-      data: {
-        email: normalizedEmail,
-        username: normalizedUsername,
-        password: hashedPassword,
-        phone_number,
-        plan: 'free',
-        first_name: first_name || '',
-        last_name: last_name || '',
-        created_at: new Date(),
-        updated_at: new Date(),
-        is_active: true,
-      },
-    });
+    // Generar token de verificación
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutos
 
-    await prisma.businesses.create({
-      data: {
-        username: normalizedUsername,
-        business_name: username.charAt(0).toUpperCase() + username.slice(1),
-        address: address || null,
-        city: city || null,
-        zipcode: zipcode || null,
-        description: null,
-        logo_url: null,
-        created_at: new Date(),
-        updated_at: new Date(),
-      },
-    });
-
-    const token = jwt.sign(
-      { id: user.id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1d' }
-    );
-
-    res.status(201).json({
-      token,
-    });
-  } catch (error) {
-    console.error('Error en registro:', error.message, error.stack);
-    res.status(500).json({ error: 'Error al registrar el usuario' });
-  }
-});
-
-// Login
-router.post('/login', async (req, res) => {
-  if (!req.body) {
-    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
-  }
-
-  const { identifier, password } = req.body;
-
-  if (!identifier?.trim() || !password) {
-    return res.status(400).json({ error: 'Identificador y contraseña son obligatorios' });
-  }
-
-  try {
-    const user = await prisma.users.findFirst({
-      where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
-    });
-    if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales incorrectast' });
-    }
-
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Credenciales incorrectas' });
-    }
-
-    await prisma.users.update({
-      where: { id: user.id },
-      data: { last_login: new Date() },
-    });
-
-    const token = jwt.sign(
-      { id: user.id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1d' }
-    );
-
-    res.json({
-      token,
-    });
-  } catch (error) {
-    console.error('Error en login:', error.message, error.stack);
-    res.status(500).json({ error: 'Error al iniciar sesión' });
-  }
-});
-
-// Get user data
-router.get('/user', authenticateJWT, async (req, res) => {
-  try {
-    // Fetch user data including related business
-    const user = await prisma.users.findUnique({
-      where: { id: req.user.id },
-      select: {
-        id: true,
-        email: true,
-        username: true,
-        phone_number: true,
-        first_name: true,
-        last_name: true,
-        plan: true,
-        created_at: true,
-        updated_at: true,
-        is_active: true,
-        last_login: true,
-        businesses: {
-          select: {
-            id: true,
-            business_name: true,
-            description: true,
-            logo_url: true,
-            address: true,
-            city: true,
-            zipcode: true,
-            created_at: true,
-            updated_at: true,
-          },
+    // Crear usuario, negocio y token en una transacción
+    const user = await prisma.$transaction(async (prisma) => {
+      const newBusiness = await prisma.business.create({
+        data: {
+          name: businessName || `Negocio de ${name || 'Usuario'}`,
+          logo: logo || null,
         },
-      },
+      });
+
+      const newUser = await prisma.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          name,
+          phone,
+          businessId: newBusiness.id,
+        },
+      });
+
+      await prisma.verificationToken.create({
+        data: {
+          token: verificationToken,
+          userId: newUser.id,
+          expiresAt,
+        },
+      });
+
+      return newUser;
+    });
+
+    // Enviar correo de verificación
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify?token=${verificationToken}`;
+    await transporter.sendMail({
+      from: `"Agenda App" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Activa tu cuenta',
+      html: `
+        <h1>Bienvenido a Agenda App</h1>
+        <p>Por favor, haz clic en el siguiente enlace para activar tu cuenta:</p>
+        <a href="${verificationUrl}">Activar cuenta</a>
+        <p>Este enlace expirará en 30 minutos.</p>
+      `,
+    });
+
+    // Generar token JWT
+    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(201).json({ token });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Verificación de cuenta
+router.get('/verify', async (req, res, next) => {
+  const { token } = req.query;
+
+  try {
+    // Buscar token de verificación
+    const verificationToken = await prisma.verificationToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+
+    if (!verificationToken) {
+      return res.status(400).json({ error: 'Token inválido' });
+    }
+
+    if (new Date() > verificationToken.expiresAt) {
+      // Eliminar usuario y negocio si el token ha expirado
+      await prisma.$transaction([
+        prisma.business.deleteMany({ where: { id: verificationToken.user.businessId } }),
+        prisma.user.delete({ where: { id: verificationToken.userId } }),
+      ]);
+      return res.status(400).json({ error: 'El token ha expirado' });
+    }
+
+    // Activar la cuenta
+    await prisma.user.update({
+      where: { id: verificationToken.userId },
+      data: { isVerified: true },
+    });
+
+    // Eliminar el token de verificación
+    await prisma.verificationToken.delete({ where: { token } });
+
+    res.status(200).json({ message: 'Cuenta verificada exitosamente' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Login de usuario
+router.post('/login', async (req, res, next) => {
+  const { email, password } = req.body;
+
+  try {
+    // Validar entrada
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Correo y contraseña son obligatorios' });
+    }
+
+    // Buscar usuario
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(400).json({ error: 'Credenciales inválidas' });
+    }
+
+    // Verificar si la cuenta está verificada
+    if (!user.isVerified) {
+      return res.status(403).json({ error: 'Cuenta no verificada. Por favor, verifica tu correo.' });
+    }
+
+    // Verificar contraseña
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ error: 'Credenciales inválidas' });
+    }
+
+    // Generar token JWT
+    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(200).json({ token });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Obtener datos del usuario autenticado
+router.get('/me', authenticate, async (req, res, next) => {
+  const userId = req.user.userId;
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { business: true },
     });
 
     if (!user) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
-    // Structure response
-    res.json({
+    res.status(200).json({
       id: user.id,
       email: user.email,
-      username: user.username,
-      phone_number: user.phone_number,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      plan: user.plan,
-      created_at: user.created_at,
-      updated_at: user.updated_at,
-      is_active: user.is_active,
-      last_login: user.last_login,
-      business: user.businesses || null,
+      name: user.name,
+      phone: user.phone,
+      business: {
+        name: user.business?.name || null,
+        logo: user.business?.logo || null,
+      },
     });
   } catch (error) {
-    console.error('Error al obtener usuario:', error.message, error.stack);
-    res.status(500).json({ error: 'Error al obtener datos del usuario' });
+    next(error);
   }
 });
 

@@ -2,6 +2,8 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const cron = require('node-cron');
+const { PrismaClient } = require('@prisma/client');
 const authRoutes = require('./routes/auth');
 const businessRoutes = require('./routes/business');
 const scheduleRoutes = require('./routes/schedules');
@@ -28,6 +30,29 @@ app.use('/api/services', serviceRoutes);
 
 // Apply rate limiting to register endpoint
 app.use('/api/auth/register', registerLimiter);
+
+// Cron job para eliminar usuarios no verificados después de 30 minutos
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    const expired = await prisma.verificationToken.findMany({
+      where: {
+        expiresAt: { lte: new Date() },
+        user: { isVerified: false },
+      },
+      include: { user: true },
+    });
+
+    for (const token of expired) {
+      await prisma.$transaction([
+        prisma.business.deleteMany({ where: { id: token.user.businessId } }),
+        prisma.user.delete({ where: { id: token.userId } }),
+      ]);
+    }
+    console.log('Usuarios no verificados eliminados:', expired.length);
+  } catch (error) {
+    console.error('Error en cron job:', error);
+  }
+});
 
 // Health check
 app.get('/', (req, res) => {

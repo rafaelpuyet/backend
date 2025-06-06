@@ -15,7 +15,8 @@ model users {
   password      String
   first_name    String
   last_name     String
-  phone_number  String   @unique
+  phone_number  String?
+  isVerified    Boolean  @default(false)
   account_type  String   @default("personal")
   plan          String   @default("free")
   created_at    DateTime @default(now())
@@ -23,6 +24,7 @@ model users {
   is_active     Boolean  @default(true)
   last_login    DateTime?
   businesses    businesses?
+  verification  VerificationToken?
 }
 
 model businesses {
@@ -37,4 +39,13 @@ model businesses {
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
   user          users    @relation(fields: [username], references: [username])
+}
+
+model VerificationToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  userId    Int      @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 }

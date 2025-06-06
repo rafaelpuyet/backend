@@ -1,12 +1,12 @@
 // server/src/routes/business.js
 const express = require('express');
-const prisma = require('../config/prisma');
-const { authenticateJWT } = require('../middleware/auth');
-
+const { PrismaClient } = require('@prisma/client');
+const authenticate = require('../middleware/authenticate');
+const prisma = new PrismaClient();
 const router = express.Router();
 
 // Create or update business details
-router.post('/', authenticateJWT, async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   const { business_name, description, logo_url, address, city, zipcode } = req.body;
 
   // Input validation
@@ -60,7 +60,7 @@ router.post('/', authenticateJWT, async (req, res) => {
 });
 
 // Get business details
-router.get('/', authenticateJWT, async (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
     const business = await prisma.businesses.findUnique({
       where: { username: req.user.username },
@@ -72,6 +72,39 @@ router.get('/', authenticateJWT, async (req, res) => {
   } catch (error) {
     console.error('Error al obtener negocio:', error);
     res.status(500).json({ error: 'Error al obtener datos del negocio' });
+  }
+});
+
+router.put('/update', authenticate, async (req, res, next) => {
+  const { name, logo } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    // Buscar el negocio asociado al usuario
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { business: true },
+    });
+
+    if (!user || !user.business) {
+      return res.status(404).json({ error: 'Negocio no encontrado' });
+    }
+
+    // Actualizar datos del negocio
+    await prisma.business.update({
+      where: { id: user.businessId },
+      data: {
+        name: name || user.business.name,
+        logo: logo || user.business.logo,
+      },
+    });
+
+    // Generar nuevo token
+    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(200).json({ token });
+  } catch (error) {
+    next(error);
   }
 });
 
