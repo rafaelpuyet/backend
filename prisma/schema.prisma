@@ -16,6 +16,7 @@ model users {
   first_name    String
   last_name     String
   phone_number  String   @unique
+  account_type  String   @default("personal")
   plan          String   @default("free")
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt

@@ -97,7 +97,7 @@ router.post('/register', async (req, res) => {
 });
 
 // Login
-router.post('/', async (req, res) => {
+router.post('/login', async (req, res) => {
   if (!req.body) {
     return res.status(400).json({ error: 'Cuerpo de la solicitud vacío o inválido' });
   }
@@ -113,7 +113,7 @@ router.post('/', async (req, res) => {
       where: { OR: [{ email: identifier.toLowerCase() }, { username: identifier.toLowerCase() }] },
     });
     if (!user || !user.is_active) {
-      return res.status(401).json({ error: 'Credenciales incorrectas o cuenta inactiva' });
+      return res.status(401).json({ error: 'Credenciales incorrectast' });
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password);

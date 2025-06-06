@@ -20,7 +20,7 @@ app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:3000' }));
 app.use(express.json());
 
 // Routes
-app.use('/api/auth', authRoutes);
+app.use('/api/', authRoutes);
 app.use('/api/business', businessRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/profile', profileRoutes);
