@@ -1,41 +1,55 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
+const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
-const { userUpdateSchema } = require('../utils/validation');
+const schemas = require('../utils/validation');
 const authenticate = require('../middleware/authenticate');
+const jwt = require('jsonwebtoken');
 
 const prisma = new PrismaClient();
-const router = express.Router();
 
+// PUT /user/update
 router.put('/update', authenticate, async (req, res, next) => {
   try {
-    const { error } = userUpdateSchema.validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { error, value } = schemas.updateUser.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { name, phone } = req.body;
-    const userId = req.user.userId;
+    const user = await prisma.user.findUnique({ where: { id: req.user.userId } });
+    if (!user) throw new Error('User not found', { statusCode: 404 });
 
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: { name, phone }
-    });
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: value,
+      });
 
-    // Sincronizar workerName si esOwner: true
-    if (name) {
-      const business = await prisma.business.findFirst({ where: { userId } });
-      if (business) {
-        await prisma.worker.updateMany({
-          where: { businessId: business.id, isOwner: true },
-          data: { workerName: name }
+      if (value.name) {
+        const worker = await tx.worker.findFirst({
+          where: { business: { userId: user.id }, isOwner: true },
         });
+        if (worker) {
+          await tx.worker.update({
+            where: { id: worker.id },
+            data: { workerName: value.name },
+          });
+        }
       }
-    }
 
-    await prisma.auditLog.create({
-      data: { action: 'update', entity: 'User', entityId: userId, userId }
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'User',
+          entityId: user.id,
+          userId: user.id,
+        },
+      });
     });
 
-    const token = jwt.sign({ userId, isBusiness: updatedUser.isBusiness, username: updatedUser.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign(
+      { userId: user.id, isBusiness: user.isBusiness, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
     res.json({ token });
   } catch (err) {
     next(err);

@@ -80,8 +80,8 @@ model Schedule {
   branchId    Int?
   workerId    Int?
   dayOfWeek   Int
-  startTime   String   @db.VarChar(8) // Formato HH:MM:SS
-  endTime     String   @db.VarChar(8) // Formato HH:MM:SS
+  startTime   String   @db.VarChar(8)
+  endTime     String   @db.VarChar(8)
   slotDuration Int
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -96,7 +96,7 @@ model Appointment {
   businessId  Int
   branchId    Int?
   workerId    Int?
-  clientName  String   @db.VarChar(100)
+  clientName  String   @db.VarChar(64)
   clientEmail String   @db.VarChar(255)
   clientPhone String   @db.VarChar(20)
   startTime   DateTime
@@ -125,10 +125,10 @@ model Exception {
   businessId  Int
   branchId    Int?
   workerId    Int?
-  date        DateTime // Solo fecha
+  date        DateTime
   isClosed    Boolean
-  startTime   String?  @db.VarChar(8) // Formato HH:MM:SS
-  endTime     String?  @db.VarChar(8) // Formato HH:MM:SS
+  startTime   String?  @db.VarChar(8)
+  endTime     String?  @db.VarChar(8)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   business    Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
@@ -162,9 +162,9 @@ model AvailableSlots {
   businessId Int
   branchId  Int?
   workerId  Int?
-  date      DateTime // Solo fecha
-  startTime String   @db.VarChar(8) // Formato HH:MM:SS
-  endTime   String   @db.VarChar(8) // Formato HH:MM:SS
+  date      DateTime
+  startTime String   @db.VarChar(8)
+  endTime   String   @db.VarChar(8)
   createdAt DateTime @default(now())
   business  Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   branch    Branch?  @relation(fields: [branchId], references: [id])

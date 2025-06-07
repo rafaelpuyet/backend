@@ -1,138 +1,108 @@
-const express = require('express');
+const express = 'express';
+const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
-const { appointmentSchema } = require('../utils/validation');
-const { businessLimiter, availabilityLimiter, appointmentLimiter } = require('../middleware/rateLimit');
+const moment = require('moment-timezone');
+const schemas = require('../utils/validation');
 const { sendEmail } = require('../utils/email');
+const { publicBusinessLimiter, availabilityLimiter, appointmentLimiter } = require('../middleware/rateLimit');
 
 const prisma = new PrismaClient();
-const router = express.Router();
 
-router.get('/business/:username', businessLimiter, async (req, res, next) => {
+// GET /public/business/:username
+router.get('/business/:username', publicBusinessLimiter, async (req, res, next) => {
   try {
-    const username = req.params.username.toLowerCase();
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: 'Business not found' });
-
-    const business = await prisma.business.findFirst({
-      where: { userId: user.id },
-      select: { id: true, name: true, logo: true, isBusiness: true }
+    const { username } = req.params;
+    const user = await prisma.user.findFirst({
+      where: { username: username.toLowerCase() },
+      include: { business: true, branches: true },
     });
 
-    let branches = [];
-    if (user.isBusiness) {
-      branches = await prisma.branch.findMany({
-        where: { businessId: business.id },
-        select: { id: true, name: true, address: true }
-      });
-      if (branches.length === 0) return res.status(400).json({ error: 'No branches configured' });
-    }
+    if (!user) throw new Error('Business not found', { statusCode: 404 });
+    if (user.isBusiness && !user.branches.length) throw new Error('No branches configured', { statusCode: 400 });
 
     res.json({
-      business: { id: business.id, name: business.name, logo: business.logo, isBusiness: user.isBusiness },
-      branches: branches.length === 1 ? branches : branches
+      business: {
+        id: user.business.id,
+        name: user.business.name,
+        logo: user.business.logo,
+        isBusiness: user.isBusiness,
+      },
+      branches: user.branches.map(branch => ({
+        id: branch.id,
+        name: branch.name,
+        address: branch.address,
+      })),
     });
   } catch (err) {
     next(err);
   }
 });
 
+// GET /public/business/:username/availability
 router.get('/business/:username/availability', availabilityLimiter, async (req, res, next) => {
   try {
-    const { branchId, workerId, date } = req.query;
-    const username = req.params.username.toLowerCase();
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: 'Business not found' });
+    const { username } = req.params;
+    const { dateTime, branchId, workerId } = req.query;
+    if (!dateTime || !moment(dateTime).dateTime.isValid()) throw new Error('Invalid date', { statusCode: 400 });
 
-    const business = await prisma.business.findFirst({ where: { userId: user.id } });
-    if (branchId && !user.isBusiness) return res.status(400).json({ error: 'Not a business account' });
+    const user = await prisma.user.findFirst({
+      where: { username: username.toLowerCase() },
+      include: { business: { include: { availableSlots: { where: { dateTime: moment(dateTime).startOf('day').toDate() } }, workers: true } } },
+    });
+    if (!user) throw new Error('Business not found', { statusCode: 404 });
 
-    const parsedDate = new Date(date);
-    if (isNaN(parsedDate)) return res.status(400).json({ error: 'Invalid date' });
-
-    const schedules = await prisma.schedule.findMany({
+    const slots = await prisma.availableSlots.findMany({
       where: {
-        businessId: business.id,
+        businessId: user.business.id,
+        dateTime: moment(dateTime).startOf('day').toDate(),
         branchId: branchId ? parseInt(branchId) : undefined,
-        workerId: workerId ? parseInt(workerId) : undefined,
-        dayOfWeek: parsedDate.getDay()
-      }
+        workerId: workerId ? parseInt(workId) : undefined,
+      },
+      include: { worker: true },
     });
 
-    const exceptions = await prisma.exception.findMany({
-      where: {
-        businessId: business.id,
-        branchId: branchId ? parseInt(branchId) : undefined,
-        workerId: workerId ? parseInt(workerId) : undefined,
-        date: parsedDate
-      }
+    res.json({
+      availableSlots: slots.map(slot => ({
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        workerId: slot.workId,
+        workerName: slot.work ? worker.workId.workerName : null,
+      })),
     });
-
-    const appointments = await prisma.appointment.findMany({
-      where: {
-        businessId: business.id,
-        branchId: branchId ? parseInt(branchId) : undefined,
-        workerId: workerId ? parseInt(workerId) : undefined,
-        startTime: {
-          gte: new Date(parsedDate.setHours(0, 0, 0, 0)),
-          lt: new Date(parsedDate.setHours(23, 59, 59, 999))
-        },
-        status: { not: 'cancelled' }
-      }
-    });
-
-    let availableSlots = [];
-    schedules.forEach(schedule => {
-      let currentTime = new Date(`2023-01-01T${schedule.startTime}`);
-      const endTime = new Date(`2023-01-01T${schedule.endTime}`);
-      while (currentTime < endTime) {
-        const slotEnd = new Date(currentTime.getTime() + schedule.slotDuration * 60 * 1000);
-        if (
-          !exceptions.some(exc => exc.isClosed || (exc.startTime <= slotEnd && exc.endTime >= currentTime)) &&
-          !appointments.some(appt => appt.startTime <= slotEnd && appt.endTime >= currentTime)
-        ) {
-          availableSlots.push({
-            startTime: currentTime.toISOString(),
-            endTime: slotEnd.toISOString(),
-            workerId: schedule.workerId,
-            workerName: schedule.worker ? schedule.worker.workerName : null
-          });
-        }
-        currentTime = slotEnd;
-      }
-    });
-
-    res.json({ availableSlots });
   } catch (err) {
     next(err);
   }
 });
 
+// POST /public/business/:username/appointments
 router.post('/business/:username/appointments', appointmentLimiter, async (req, res, next) => {
   try {
-    const { error } = appointmentSchema.validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { username } = req.params;
+    const { error, value } = schemas.createAppointment.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { branchId, workerId, startTime, endTime, clientName, clientEmail, clientPhone } = req.body;
-    const username = req.params.username.toLowerCase();
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(404).json({ error: 'Business not found' });
+    const { branchId, workerId, startTime, endTime, clientName, clientEmail, clientPhone } = value;
 
-    const business = await prisma.business.findFirst({ where: { userId: user.id } });
-    if (branchId && !user.isBusiness) return res.status(400).json({ error: 'Not a business account' });
+    const user = await prisma.user.findFirst({
+      where: { username: username.toLowerCase() },
+      include: { business: true },
+    });
+    if (!user) throw new Error('Business not found', { statusCode: 404 });
 
     const appointment = await prisma.$transaction(async (tx) => {
-      const slotTaken = await tx.appointment.findFirst({
+      const existing = await tx.appointment.findFirst({
         where: {
-          businessId: business.id,
+          businessId: user.business.id,
           startTime: new Date(startTime),
-          status: { not: 'cancelled' }
-        }
+          status: { not: 'cancelled' },
+        },
+        lock: 'UPDATE',
       });
-      if (slotTaken) throw new Error('Slot taken');
+      if (existing) throw new Error('Slot already booked', { statusCode: 400 });
 
-      return tx.appointment({
+      const newAppointment = await tx.appointment.create({
         data: {
-          businessId: business.id,
+          businessId: user.businId.id,
           branchId,
           workerId,
           clientName,
@@ -140,108 +110,172 @@ router.post('/business/:username/appointments', appointmentLimiter, async (req, 
           clientPhone,
           startTime: new Date(startTime),
           endTime: new Date(endTime),
-          status: 'pending'
-        }
+          status: 'pending',
+        },
       });
+
+      const token = require('crypto').randomBytes(32).toString('hex');
+      await tx.temporaryToken.create({
+        data: {
+          appointmentId: newAppointment.id,
+          token,
+          clientEmail,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'create',
+          entity: 'Appointment',
+          entityId: newAppointment.id,
+        },
+      });
+
+      await sendEmail({
+        email: clientEmail,
+        subject: 'Confirmación de Cita',
+        template: 'confirmation',
+        data: {
+          businessName: user.business.name,
+          dateTime: moment(startTime).format('DD-MM-YYYY'),
+          time: moment(startTime).format('HH:mm'),
+          appointmentId: newAppointment.id,
+          token,
+        },
+      });
+
+      return newAppointment;
     });
 
-    await sendEmail(clientEmail, 'Appointment Confirmation', `Your appointment is confirmed for ${startTime}.`);
-    await prisma.auditLog.create({
-      data: { action: 'create', entity: 'Appointment', entityId: appointment.id }
-    });
-
-    res.json({ message: 'Appointment created', appointmentId: appointment.id });
+    res.json({ message: 'Appointment created successfully', appointmentId: appointment.id });
   } catch (err) {
     next(err);
   }
 });
 
+// PUT /public/appointments/:id
 router.put('/appointments/:id', appointmentLimiter, async (req, res, next) => {
   try {
-    const { token, startTime, endTime } = req.body;
+    const { error, value } = schemas.manageAppointment.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const { token, startTime, endTime } = value;
     const appointmentId = parseInt(req.params.id);
 
-    const tempToken = await prisma.temporaryToken.findUnique({
-      where: { token, used: false, expiresAt: { gt: new Date() } }
-    });
-    if (!tempToken || tempToken.appointmentId !== appointmentId) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
-
     const appointment = await prisma.appointment.findUnique({ where: { id: appointmentId } });
-    if (!appointment || appointment.clientEmail !== tempToken.clientEmail) {
-      return res.status(400).json({ error: 'Invalid appointment' });
+    if (!appointment) throw new Error('Appointment not found', { statusCode: 404 });
+
+    const tempToken = await prisma.temporaryToken.findUnique({ where: { token } });
+    if (!tempToken || tempToken.used || tempToken.expiresAt < new Date() || tempToken.clientEmail !== appointment.clientEmail) {
+      throw new Error('Invalid or expired token', { statusCode: 400 });
     }
 
-    if (startTime && endTime) {
-      const slotTaken = await prisma.appointment.findFirst({
-        where: {
-          businessId: appointment.businessId,
-          startTime: new Date(startTime),
-          status: { not: 'cancelled' },
-          id: { not: appointmentId }
-        }
-      });
-      if (slotTaken) return res.status(400).json({ error: 'Slot taken' });
-    }
+    await prisma.$transaction(async (tx) => {
+      if (startTime && endTime) {
+        const existing = await tx.appointment.findFirst({
+          where: {
+            businessId: appointment.businessId,
+            startTime: new Date(startTime),
+            status: { not: 'cancelled' },
+            id: { not: appointmentId },
+          },
+          lock: 'UPDATE',
+        });
+        if (existing) throw new Error('Slot already booked', { statusCode: 400 });
 
-    const updatedAppointment = await prisma.appointment.update({
-      where: { id: appointmentId },
-      data: {
-        startTime: startTime ? new Date(startTime) : undefined,
-        endTime: endTime ? new Date(endTime) : undefined,
-        status: 'pending'
+        await tx.appointment.update({
+          where: { id: appointmentId },
+          data: {
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            status: 'pending',
+          },
+        });
       }
+
+      await tx.temporaryToken.update({
+        where: { token },
+        data: { used: true },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Appointment',
+          entityId: appointmentId,
+        },
+      });
+
+      await sendEmail({
+        to: appointment.clientEmail,
+        subject: 'Cita Reprogramada',
+        template: 'confirmation',
+        data: {
+          businessName: (await prisma.business.findUnique({ where: { id: appointment.businessId } })).name,
+          date: moment(startTime || appointment.startTime).format('DD-MM-YYYY'),
+          time: moment(startTime || appointment.startTime).format('HH:mm'),
+          appointmentId,
+          token: require('crypto').randomBytes(32).toString('hex'),
+        },
+      });
     });
 
-    await prisma.temporaryToken.update({
-      where: { token },
-      data: { used: true }
-    });
-
-    await prisma.auditLog.create({
-      data: { action: 'update', entity: 'Appointment', entityId: appointmentId }
-    });
-
-    res.json({ message: 'Appointment updated' });
+    res.json({ message: 'Appointment rescheduled successfully' });
   } catch (err) {
     next(err);
   }
 });
 
+// DELETE /public/appointments/:id
 router.delete('/appointments/:id', appointmentLimiter, async (req, res, next) => {
   try {
-    const { token } = req.body;
+    const { error, value } = schemas.manageAppointment.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const { token } = value;
     const appointmentId = parseInt(req.params.id);
 
-    const tempToken = await prisma.temporaryToken.findUnique({
-      where: { token, used: false, expiresAt: { gt: new Date() } }
-    });
-    if (!tempToken || tempToken.appointmentId !== appointmentId) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
-
     const appointment = await prisma.appointment.findUnique({ where: { id: appointmentId } });
-    if (!appointment || appointment.clientEmail !== tempToken.clientEmail) {
-      return res.status(400).json({ error: 'Invalid appointment' });
+    if (!appointment) throw new Error('Appointment not found', { statusCode: 404 });
+
+    const tempToken = await prisma.temporaryToken.findUnique({ where: { token } });
+    if (!tempToken || tempToken.used || tempToken.expiresAt < new Date() || tempToken.clientEmail !== appointment.clientEmail) {
+      throw new Error('Invalid or expired token', { statusCode: 400 });
     }
 
-    await prisma.appointment.update({
-      where: { id: appointmentId },
-      data: { status: 'cancelled' }
+    await prisma.$transaction(async (tx) => {
+      await tx.appointment.update({
+        where: { id: appointmentId },
+        data: { status: 'cancelled' },
+      });
+
+      await tx.temporaryToken.update({
+        where: { token },
+        data: { used: true },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'delete',
+          entity: 'Appointment',
+          entityId: appointmentId,
+        },
+      });
+
+      await sendEmail({
+        to: appointment.clientEmail,
+        subject: 'Cita Cancelada',
+        template: 'cancellation',
+        data: {
+          businessName: (await prisma.business.findUnique({ where: { id: appointment.businessId } })).name,
+          date: moment(appointment.startTime).format('DD-MM-YYYY'),
+          time: moment(appointment.startTime).format('HH:mm'),
+        },
+      });
     });
 
-    await prisma.temporaryToken.update({
-      where: { token },
-      data: { used: true }
-    });
-
-    await sendEmail(appointment.clientEmail, 'Appointment Cancelled', `Your appointment has been cancelled.`);
-    await prisma.auditLog.create({
-      data: { action: 'update', entity: 'Appointment', entityId: appointmentId }
-    });
-
-    res.json({ message: 'Appointment cancelled' });
+    res.json({ message: 'Appointment cancelled successfully' });
   } catch (err) {
     next(err);
   }

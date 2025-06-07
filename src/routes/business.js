@@ -1,182 +1,480 @@
 const express = require('express');
+const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
-const { scheduleSchema } = require('../utils/validation');
+const schemas = require('../utils/validation');
 const authenticate = require('../middleware/authenticate');
 
 const prisma = new PrismaClient();
-const router = express.Router();
 
+// PUT /business/update
 router.put('/update', authenticate, async (req, res, next) => {
   try {
-    const { error } = Joi.object({
-      name: Joi.string().max(100).pattern(/^[a-zA-ZÀ-ÿ\s-]+$/).optional(),
-      logo: Joi.string().max(255).optional(),
-      timezone: Joi.string().max(50).optional()
-    }).validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { error, value } = schemas.updateBusiness.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { name, logo, timezone } = req.body;
-    const userId = req.user.userId;
+    const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
+    if (!business) throw new Error('Business not found', { statusCode: 404 });
 
-    const business = await prisma.business.update({
-      where: { userId },
-      data: { name, logo, timezone }
+    await prisma.$transaction(async (tx) => {
+      await tx.business.update({
+        where: { id: business.id },
+        data: value,
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Business',
+          entityId: business.id,
+          userId: req.user.userId,
+        },
+      });
     });
 
-    await prisma.auditLog.create({
-      data: { action: 'update', entity: 'Business', entityId: business.id, userId }
-    });
+    const token = jwt.sign(
+      { userId: req.user.userId, isBusiness: req.user.isBusiness, username: req.user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
 
-    res.json({ token: req.headers.authorization.split(' ')[1] });
+    res.json({ token });
   } catch (err) {
     next(err);
   }
 });
 
+// POST /branches
 router.post('/branches', authenticate, async (req, res, next) => {
   try {
-    if (!req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
+    if (!req.user.isBusiness) throw new Error('Only businesses can create branches', { statusCode: 403 });
 
-    const { error } = Joi.object({
-      name: Joi.string().max(100).required(),
-      address: Joi.string().max(255).optional()
-    }).validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { error, value } = schemas.createBranch.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { name, address } = req.body;
-    const userId = req.user.userId;
-    const business = await prisma.business.findFirst({ where: { userId } });
+    const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
+    if (!business) throw new Error('Business not found', { statusCode: 404 });
 
-    const branch = await prisma.branch.create({
-      data: {
-        businessId: business.id,
-        name,
-        address
-      }
+    const branch = await prisma.$transaction(async (tx) => {
+      const newBranch = await tx.branch.create({
+        data: {
+          businessId: business.id,
+          ...value,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'create',
+          entity: 'Branch',
+          entityId: newBranch.id,
+          userId: req.user.userId,
+        },
+      });
+
+      return newBranch;
     });
 
-    await prisma.auditLog.create({
-      data: { action: 'create', entity: 'Branch', entityId: branch.id, userId }
-    });
-
-    res.json({ token: req.headers.authorization.split(' ')[1] });
+    res.json({ branch });
   } catch (err) {
     next(err);
   }
 });
 
+// PUT /branches/:id
+router.put('/branches/:id', authenticate, async (req, res, next) => {
+  try {
+    if (!req.user.isBusiness) throw new Error('Only businesses can update branches', { statusCode: 403 });
+
+    const { error, value } = schemas.updateBranch.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const branchId = parseInt(req.params.id);
+    const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+    if (!branch) throw new Error('Branch not found', { statusCode: 404 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.branch.update({
+        where: { id: branchId },
+        data: value,
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Branch',
+          entityId: branchId,
+          userId: req.user.userId,
+        },
+      });
+    });
+
+    res.json({ message: 'Branch updated successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /branches/:id
+router.delete('/branches/:id', authenticate, async (req, res, next) => {
+  try {
+    if (!req.user.isBusiness) throw new Error('Only businesses can delete branches', { statusCode: 403 });
+
+    const branchId = parseInt(req.params.id);
+    const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+    if (!branch) throw new Error('Branch not found', { statusCode: 404 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.branch.delete({ where: { id: branchId } });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'delete',
+          entity: 'Branch',
+          entityId: branchId,
+          userId: req.user.userId,
+        },
+      });
+    });
+
+    res.json({ message: 'Branch deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /workers
 router.post('/workers', authenticate, async (req, res, next) => {
   try {
-    const { error } = Joi.object({
-      branchId: Joi.number().optional(),
-      name: Joi.string().max(255).pattern(/^[a-zA-ZÀ-ÿ\s-]+$/).required()
-    }).validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { error, value } = schemas.createWorker.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { branchId, name } = req.body;
-    const userId = req.user.userId;
-    const business = await prisma.business.findFirst({ where: { userId } });
+    const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
+    if (!business) throw new Error('Business not found', { statusCode: 404 });
 
-    if (branchId && !req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
-    if (branchId) {
-      const branch = await prisma.branch.findUnique({ where: { id: branchId, businessId: business.id } });
-      if (!branch) return res.status(404).json({ error: 'Branch not found' });
-    }
+    const worker = await prisma.$transaction(async (tx) => {
+      const newWorker = await tx.worker.create({
+        data: {
+          businessId: business.id,
+          ...value,
+        },
+      });
 
-    const worker = await prisma.worker.create({
-      data: {
-        businessId: business.id,
-        branchId,
-        workerName: name
-      }
+      await tx.auditLog.create({
+        data: {
+          action: 'create',
+          entity: 'Worker',
+          entityId: newWorker.id,
+          userId: req.user.userId,
+        },
+      });
+
+      return newWorker;
     });
 
-    await prisma.auditLog.create({
-      data: { action: 'create', entity: 'Worker', entityId: worker.id, userId }
-    });
-
-    res.json({ token: req.headers.authorization.split(' ')[1] });
+    res.json({ worker });
   } catch (err) {
     next(err);
   }
 });
 
-router.delete('/workers/:id', authenticate, async(req, res, next) => {
-  try{
+// PUT /workers/:id
+router.put('/workers/:id', authenticate, async (req, res, next) => {
+  try {
+    const { error, value } = schemas.updateWorker.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
     const workerId = parseInt(req.params.id);
-    const userId = req.user.userId;
-    const worker = await prisma.worker.findUnique({
-      where: { id: workerId }
+    const worker = await prisma.worker.findUnique({ where: { id: workerId } });
+    if (!worker) throw new Error('Worker not found', { statusCode: 404 });
+    if (worker.isOwner) throw new Error('Cannot modify owner worker', { statusCode: 403 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.worker.update({
+        where: { id: workerId },
+        data: value,
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Worker',
+          entityId: workerId,
+          userId: req.user.userId,
+        },
+      });
     });
 
-    if (!worker) return res.status(404).json({ error: 'Worker not found' });
-    if (worker.isOwner) return res.status(403).json({ error: 'Cannot delete owner worker' });
-
-    const business = await prisma.business.findFirst({ where: { userId } });
-    if (worker.businessId !== business.id) return res.status(403).json({ error: 'Unauthorized' });
-
-    await prisma.worker.delete({ where: { id: workerId } });
-
-    await prisma.auditLog.create({
-      data: { action: 'delete', entity: 'Worker', entityId: workerId, userId }
-    });
-
-    res.json({ message: 'Worker deleted', token: req.headers.authorization.split(' ')[1] });
-  }
-  catch (err) {
+    res.json({ message: 'Worker updated successfully' });
+  } catch (err) {
     next(err);
   }
 });
 
+// DELETE /workers/:id
+router.delete('/workers/:id', authenticate, async (req, res, next) => {
+  try {
+    const workerId = parseInt(req.params.id);
+    const worker = await prisma.worker.findUnique({ where: { id: workerId } });
+    if (!worker) throw new Error('Worker not found', { statusCode: 404 });
+    if (worker.isOwner) throw new Error('Cannot delete owner worker', { statusCode: 403 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.worker.delete({ where: { id: workerId } });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'delete',
+          entity: 'Worker',
+          entityId: workerId,
+          userId: req.user.userId,
+        },
+      });
+    });
+
+    res.json({ message: 'Worker deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /schedules
 router.post('/schedules', authenticate, async (req, res, next) => {
   try {
-    const { error } = scheduleSchema.validate(req.body);
-    if (error) return res.status(400).json({ error: error.details[0].message });
+    const { error, value } = schemas.createSchedule.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
 
-    const { branchId, workerId, dayOfWeek, startTime, endTime, slotDuration } = req.body;
-    const userId = req.user.userId;
-    const business = await prisma.business.findFirst({ where: { userId } });
+    const { branchId, workerId, dayOfWeek, startTime, endTime, slotDuration } = value;
+    if (startTime >= endTime) throw new Error('startTime must be before endTime', { statusCode: 400 });
 
-    if (branchId && !req.user.isBusiness) return res.status(403).json({ error: 'Not a business account' });
-    if (branchId) {
-      const branch = await prisma.branch.findUnique({ where: { id: branchId, businessId: business.id } });
-      if (!branch) return res.status(404).json({ error: 'Branch not found' });
-    }
-    if (workerId) {
-      const worker = await prisma.worker.findUnique({ where: { id: workerId, businessId: business.id } });
-      if (!worker) return res.status(404).json({ error: 'Worker not found' });
-    }
+    const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
+    if (!business) throw new Error('Business not found', { statusCode: 404 });
 
-    const conflictingSchedule = await prisma.schedule.findFirst({
+    const overlapping = await prisma.schedule.findFirst({
       where: {
         businessId: business.id,
         workerId,
         dayOfWeek,
         OR: [
           { startTime: { lte: endTime }, endTime: { gte: startTime } },
-          { startTime: { gte: startTime }, endTime: { lte: endTime } }
-        ]
-      }
+          { startTime: { gte: startTime }, endTime: { lte: endTime } },
+        ],
+      },
     });
-    if (conflictSchedule) return res.status(400).json({ error: 'Overlapping schedule exists' });
+    if (overlapping) throw new Error('Overlapping schedule exists', { statusCode: 400 });
 
-    const schedule = await prisma.schedule.create({
-      data: {
-        businessId: business.id,
-        branchId,
+    const schedule = await prisma.$transaction(async (tx) => {
+      const newSchedule = await tx.schedule.create({
+        data: {
+          businessId: business.id,
+          branchId,
+          workerId,
+          dayOfWeek,
+          startTime,
+          endTime,
+          slotDuration,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'create',
+          entity: 'Schedule',
+          entityId: newSchedule.id,
+          userId: req.user.userId,
+        },
+      });
+
+      return newSchedule;
+    });
+
+    res.json({ schedule });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /schedules/:id
+router.put('/schedules/:id', authenticate, async (req, res, next) => {
+  try {
+    const { error, value } = schemas.createSchedule.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const scheduleId = parseInt(req.params.id);
+    const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
+    if (!schedule) throw new Error('Schedule not found', { statusCode: 404, });
+
+    const { branchId, workerId, dayOfWeek, startTime, endTime, slotDuration } = value;
+    if (startTime >= endTime) throw new Error('startTime must be before endTime', { statusCode: 400 });
+
+    const overlapping = await prisma.schedule.findFirst({
+      where: {
+        businessId: schedule.businessId,
         workerId,
         dayOfWeek,
-        startTime,
-        endTime,
-        slotDuration
-      }
+        id: { not: scheduleId },
+        OR: [
+          { startTime: { lte: endTime }, endTime: { gte: startTime } },
+          { startTime: { gte: startTime }, endTime: { lte: endTime } },
+        ],
+      },
+    });
+    if (overlapping) throw new Error('Overlapping schedule exists', { statusCode: 400 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.schedule.update({
+        where: { id: scheduleId },
+        data: value,
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Schedule',
+          entityId: scheduleId,
+          userId: req.user.userId,
+        },
+      });
     });
 
-    await prisma.auditLog.create({
-      data: { action: 'create', entity: 'Schedule', entityId: schedule.id, userId }
+    res.json({ message: 'Schedule updated successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /schedules/:id
+router.delete('/schedules/:id', authenticate, async (req, res, next) => {
+  try {
+    const scheduleId = parseInt(req.params.id);
+    const schedule = await prisma.schedule.findUnique({ where: { id: scheduleId } });
+    if (!schedule) throw new Error('Schedule not found', { statusCode: 404 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.schedule.delete({ where: { id: scheduleId } });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'delete',
+          entity: 'Schedule',
+          entityId: scheduleId,
+          userId: req.user.userId,
+        },
+      });
     });
 
-    res.json({ token: req.headers.authorization.split(' ')[1] });
+    res.json({ message: 'Schedule deleted successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /exceptions
+router.post('/exceptions', authenticate, async (req, res, next) => {
+  try {
+    const { error, value } = schemas.createException.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const { branchId, workerId, dateTime, isClosed, startTime, endTime } = value;
+    if (!isClosed && startTime && endTime && startTime >= endTime) {
+      throw new Error('startTime must be before endTime', { statusCode: 400 });
+    }
+
+    const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
+    if (!business) throw new Error('Business not found', { statusCode: 404 });
+
+    const exception = await prisma.$transaction(async (tx) => {
+      const newException = await tx.exception.create({
+        data: {
+          businessId: business.id,
+          branchId,
+          workerId,
+          dateTime,
+          isClosed,
+          startTime: isClosed ? startTime : undefined,
+          endTime: isClosed ? endTime: undefined,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'create',
+          entity: 'Exception',
+          entityId: newException.id,
+          userId: req.user.userId,
+        },
+      });
+
+      return newException;
+    });
+
+    res.json({ exception });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /exceptions/:id
+router.put('/exceptions/:id', authenticate, async (req, res, next) => {
+  try {
+    const { error, value } = schemas.createException.validate(req.body);
+    if (error) throw Object.assign(error, { statusCode: 400 });
+
+    const exceptionId = parseInt(req.params.id);
+    const exception = await prisma.exception.findUnique({ where: { id: exceptionId } });
+    if (!exception) throw new Error('Exception not found', { statusCode: 404 });
+
+    const { isClosed, startTime, endTime } = value;
+    if (!isClosed && startTime && endTime && startTime >= endTime) {
+      throw new Error('startTime must be before endTime', { statusCode: 400 });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.exception.update({
+        where: { id: exceptionId },
+        data: {
+          ...value,
+          startTime: isClosed ? startTime : undefined,
+          endTime: isClosed ? endTime : undefined,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'update',
+          entity: 'Exception',
+          entityId: exceptionId,
+          userId: req.user.userId,
+        },
+      });
+    });
+
+    res.json({ message: 'Exception updated successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /exceptions/:id
+router.delete('/exceptions/:id', authenticate, async (req, res, next) => {
+  try {
+    const exceptionId = parseInt(req.params.id);
+    const exception = await prisma.exception.findUnique({ where: { id: exceptionId } });
+    if (!exception) throw new Error('Exception not found', { statusCode: 404 });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.exception.delete({ where: { id: exceptionId } });
+
+      await tx.auditLog.create({
+        data: {
+          action: 'delete',
+          entity: 'Exception',
+          entityId: exceptionId,
+          userId: req.user.userId,
+        },
+      });
+    });
+
+    res.json({ message: 'Exception deleted successfully' });
   } catch (err) {
     next(err);
   }
