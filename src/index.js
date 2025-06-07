@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
 const moment = require('moment-timezone');
@@ -13,6 +14,15 @@ const { cleanupUnverifiedUsers, precalculateAvailableSlots, cleanupAuditLogs } =
 
 const prisma = new PrismaClient();
 const app = express();
+
+// CORS configuration
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || ['http://localhost:3001', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+};
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
