@@ -1,49 +1,76 @@
 const express = require('express');
-const router = express.Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const Joi = require('joi');
 const { PrismaClient } = require('@prisma/client');
-const { sendEmail } = require('../utils/email');
-const schemas = require('../utils/validation');
-const { resendVerificationLimiter } = require('../middleware/rateLimit');
+const rateLimit = require('express-rate-limit');
+const { sendVerificationEmail } = require('../utils/email');
+const { v4: uuidv4 } = require('uuid');
 
+const router = express.Router();
 const prisma = new PrismaClient();
 
-// POST /auth/register
-router.post('/register', async (req, res, next) => {
+const registerSchema = Joi.object({
+  email: Joi.string().email().required(),
+  password: Joi.string().min(6).required(),
+  name: Joi.string().max(100).when('isBusiness', { is: false, then: Joi.required() }),
+  phone: Joi.string().max(20).allow('', null).optional(),
+  username: Joi.string().pattern(/^[a-zA-Z0-9-]+$/).min(3).max(50).required(),
+  businessName: Joi.string().max(100).allow('', null).optional(),
+  logo: Joi.string().max(255).allow('', null).optional(),
+  isBusiness: Joi.boolean().default(false)
+});
+
+const loginSchema = Joi.object({
+  email: Joi.string().email().required(),
+  password: Joi.string().required()
+});
+
+const resendSchema = Joi.object({
+  email: Joi.string().email().required()
+});
+
+// Rate limiters
+const registerLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5 });
+const resendLimiter = rateLimit({ windowMs: 24 * 60 * 60 * 1000, max: 3 });
+
+router.post('/register', registerLimiter, async (req, res) => {
+  const { error, value } = registerSchema.validate(req.body);
+  if (error) return res.status(400).json({ error: error.details[0].message });
+
+  const { email, password, name, phone, username, businessName, logo, isBusiness } = value;
+
   try {
-    const { error, value } = schemas.register.validate(req.body);
-    if (error) throw Object.assign(error, { statusCode: 400 });
-
-    const { email, password, name, phone, username, businessName, logo, isBusiness } = value;
-    const normalizedUsername = username.toLowerCase();
-
+    // Check for existing email/username
     const existingUser = await prisma.user.findFirst({
-      where: { OR: [{ email }, { username: normalizedUsername }] }
+      where: { OR: [{ email }, { username: username.toLowerCase() }] }
     });
-    if (existingUser) throw new Error('Email or username already exists', { statusCode: 400 });
+    if (existingUser) return res.status(400).json({ error: 'Email or username already taken' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const businessNameDefault = isBusiness ? businessName || `Agenda de ${username}` : `Agenda de ${name || username}`;
+    const token = uuidv4();
 
-    const user = await prisma.$transaction(async (tx) => {
-      const newUser = await tx.user.create({
+    // Perform all operations in a transaction, including email sending
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
         data: {
           email,
           password: hashedPassword,
-          name,
-          phone,
-          username: normalizedUsername,
-          isBusiness,
-        },
+          name: isBusiness ? null : name,
+          phone: phone || null,
+          username: username.toLowerCase(),
+          isBusiness
+        }
       });
 
       const business = await tx.business.create({
         data: {
-          userId: newUser.id,
-          name: businessName || `Agenda de ${name || normalizedUsername}`,
-          logo,
-          timezone: 'UTC',
-        },
+          userId: user.id,
+          name: businessNameDefault,
+          logo: logo || null,
+          timezone: 'America/Santiago'
+        }
       });
 
       if (!isBusiness) {
@@ -51,205 +78,189 @@ router.post('/register', async (req, res, next) => {
           data: {
             businessId: business.id,
             workerName: name,
-            isOwner: true,
-          },
+            isOwner: true
+          }
         });
       } else {
         await tx.branch.create({
           data: {
             businessId: business.id,
-            name: 'Sucursal Principal',
-          },
+            name: 'Sucursal Principal'
+          }
         });
       }
 
       await tx.schedule.create({
         data: {
           businessId: business.id,
-          dayOfWeek: [1, 2, 3, 4, 5], // Lunes-Viernes
+          dayOfWeek: 1, // Monday
           startTime: '09:00:00',
           endTime: '17:00:00',
-          slotDuration: 30,
-        },
+          slotDuration: 30
+        }
       });
 
-      await tx.verificationToken.deleteMany({ where: { userId: newUser.id } });
-      const token = require('crypto').randomBytes(32).toString('hex');
+      await tx.verificationToken.deleteMany({ where: { userId: user.id } });
       await tx.verificationToken.create({
         data: {
-          userId: newUser.id,
           token,
-          expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-        },
+          userId: user.id,
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000) // 30 minutes
+        }
       });
 
-      await sendEmail({
-        to: email,
-        subject: 'Verifica tu cuenta',
-        template: 'verification',
-        data: { token },
-      });
+      // Send verification email within transaction
+      await sendVerificationEmail(email, token);
 
-      return newUser;
+      return { user };
     });
 
-    const token = jwt.sign(
-      { userId: user.id, isBusiness: user.isBusiness, username: normalizedUsername },
+    // Generate JWT
+    const tokenJwt = jwt.sign(
+      { userId: result.user.id, isBusiness, username: username.toLowerCase() },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
-
-    res.json({ token });
-  } catch (err) {
-    next(err);
+    res.json({ token: tokenJwt });
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('Failed to send email')) {
+      return res.status(503).json({ error: 'Failed to send verification email, please try again later' });
+    }
+    res.status(500).json({ error: 'Registration failed' });
   }
 });
 
-// GET /auth/verify
-router.get('/verify', async (req, res, next) => {
+router.get('/verify', async (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ error: 'Token required' });
+
   try {
-    const { token } = req.query;
-    if (!token) throw new Error('Token required', { statusCode: 400 });
-
     const verificationToken = await prisma.verificationToken.findUnique({ where: { token } });
-    if (!verificationToken) throw new Error('Invalid token', { statusCode: 400 });
-    if (verificationToken.expiresAt < new Date()) throw new Error('Token expired', { statusCode: 400 });
+    if (!verificationToken) return res.status(400).json({ error: 'Invalid token' });
+    if (verificationToken.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Token expired, please request a new one' });
+    }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: verificationToken.userId },
-        data: { isVerified: true },
-      });
-      await tx.verificationToken.delete({ where: { token } });
-    });
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: verificationToken.userId }, data: { isVerified: true } }),
+      prisma.verificationToken.delete({ where: { token } })
+    ]);
 
     res.json({ message: 'Account verified successfully' });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// POST /auth/resend-verification
-router.post('/resend-verification', resendVerificationLimiter, async (req, res, next) => {
-  try {
-    const { error, value } = schemas.resendVerification.validate(req.body);
-    if (error) throw Object.assign(error, { statusCode: 400 });
+router.post('/resend-verification', resendLimiter, async (req, res) => {
+  const { error, value } = resendSchema.validate(req.body);
+  if (error) return res.status(400).json({ error: error.details[0].message });
 
-    const { email } = value;
+  const { email } = value;
+
+  try {
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) throw new Error('Email not registered', { statusCode: 400 });
-    if (user.isVerified) throw new Error('Account already verified', { statusCode: 400 });
+    if (!user || user.isVerified) return res.status(400).json({ error: 'User not found or already verified' });
 
     await prisma.$transaction(async (tx) => {
       await tx.verificationToken.deleteMany({ where: { userId: user.id } });
-      const token = require('crypto').randomBytes(32).toString('hex');
+      const token = uuidv4();
       await tx.verificationToken.create({
         data: {
-          userId: user.id,
           token,
-          expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-        },
+          userId: user.id,
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000)
+        }
       });
-
-      await sendEmail({
-        to: email,
-        subject: 'Verifica tu cuenta',
-        template: 'verification',
-        data: { token },
-      });
+      await sendVerificationEmail(email, token);
     });
 
     res.json({ message: 'Verification email sent' });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('Failed to send email')) {
+      return res.status(503).json({ error: 'Failed to send verification email, please try again later' });
+    }
+    res.status(500).json({ error: 'Failed to resend verification email' });
   }
 });
 
-// POST /auth/login
-router.post('/login', async (req, res, next) => {
+router.post('/login', async (req, res) => {
+  const { error, value } = loginSchema.validate(req.body);
+  if (error) return res.status(400).json({ error: error.details[0].message });
+
+  const { email, password } = value;
+
   try {
-    const { error, value } = schemas.login.validate(req.body);
-    if (error) throw Object.assign(error, { statusCode: 400 });
-
-    const { email, password } = value;
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) throw new Error('Invalid credentials', { statusCode: 400 });
-    if (!user.isVerified) throw new Error('Account not verified', { statusCode: 403 });
+    if (!user || !await bcrypt.compare(password, user.password)) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+    if (!user.isVerified) return res.status(403).json({ error: 'Account not verified' });
 
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) throw new Error('Invalid credentials', { statusCode: 400 });
-
-    const token = jwt.sign(
-      { userId: user.id, isBusiness: user.isBusiness, username: user.username },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-
-    const refreshToken = require('crypto').randomBytes(32).toString('hex');
+    const token = jwt.sign({ userId: user.id, isBusiness: user.isBusiness, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const refreshToken = uuidv4();
     await prisma.refreshToken.create({
       data: {
-        userId: user.id,
         token: refreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      }
     });
 
     res.json({ token, refreshToken });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// POST /auth/refresh
-router.post('/refresh', async (req, res, next) => {
+router.post('/refresh', async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) return res.status(401).json({ error: 'Refresh token required' });
+
   try {
-    const { error, value } = schemas.refreshToken.validate(req.body);
-    if (error) throw Object.assign(error, { statusCode: 400 });
+    const tokenRecord = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
+    if (!tokenRecord || tokenRecord.expiresAt < new Date()) {
+      return res.status(401).json({ error: 'Invalid or expired refresh token' });
+    }
 
-    const { token: refreshToken } = value;
-    const storedToken = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
-    if (!storedToken) throw new Error('Invalid refresh token', { statusCode: 401 });
-    if (storedToken.expiresAt < new Date()) throw new Error('Refresh token expired', { statusCode: 401 });
+    const user = await prisma.user.findUnique({ where: { id: tokenRecord.userId } });
+    const newToken = jwt.sign({ userId: user.id, isBusiness: user.isBusiness, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const newRefreshToken = uuidv4();
 
-    const user = await prisma.user.findUnique({ where: { id: storedToken.userId } });
-    if (!user) throw new Error('User not found', { statusCode: 401 });
-
-    await prisma.$transaction(async (tx) => {
-      await tx.refreshToken.delete({ where: { token: refreshToken } });
-      const newRefreshToken = require('crypto').randomBytes(32).toString('hex');
-      await tx.refreshToken.create({
+    await prisma.$transaction([
+      prisma.refreshToken.delete({ where: { token: refreshToken } }),
+      prisma.refreshToken.create({
         data: {
-          userId: user.id,
           token: newRefreshToken,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        },
-      });
+          userId: user.id,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        }
+      })
+    ]);
 
-      const token = jwt.sign(
-        { userId: user.id, isBusiness: user.isBusiness, username: user.username },
-        process.env.JWT_SECRET,
-        { expiresIn: '1h' }
-      );
-
-      res.json({ token, refreshToken: newRefreshToken });
-    });
-  } catch (err) {
-    next(err);
+    res.json({ token: newToken, refreshToken: newRefreshToken });
+  } catch (error) {
+    res.status(500).json({ error: 'Token refresh failed' });
   }
 });
 
-// GET /auth/me
-router.get('/me', async (req, res, next) => {
-  try {
-    if (!req.user) throw new Error('Not authenticated', { statusCode: 401 });
+router.get('/me', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await prisma.user.findUnique({
-      where: { id: req.user.userId },
+      where: { id: decoded.userId },
       include: {
         business: true,
-        workers: { where: { isOwner: true }, select: { id: true, workerName: true, isOwner: true } },
-      },
+        worker: { where: { isOwner: true } }
+      }
     });
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
     res.json({
       id: user.id,
@@ -259,10 +270,10 @@ router.get('/me', async (req, res, next) => {
       username: user.username,
       isBusiness: user.isBusiness,
       business: user.business,
-      worker: user.workers[0] || null,
+      worker: user.worker[0] || null
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid token' });
   }
 });
 

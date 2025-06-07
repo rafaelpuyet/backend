@@ -1,7 +1,8 @@
 const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.ethereal.email',
+  port: 587,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
@@ -21,14 +22,18 @@ const sendEmail = async (to, subject, html, retries = 3, delay = 1000) => {
 };
 
 const sendVerificationEmail = async (email, token) => {
-  const url = `${process.env.FRONTEND_URL}/verify?token=${token}`;
-  const html = `
-    <h2>Verifica tu cuenta</h2>
-    <p>Por favor, verifica tu correo electrónico haciendo clic en el siguiente enlace:</p>
-    <a href="${url}">Verificar cuenta</a>
-    <p>Este enlace expira en 30 minutos.</p>
-  `;
-  await sendEmail(email, 'Verifica tu cuenta - MiAgenda', html);
+  try {
+    const url = `${process.env.FRONTEND_URL}/verify?token=${token}`;
+    const html = `
+      <h2>Verifica tu cuenta</h2>
+      <p>Por favor, verifica tu correo electrónico haciendo clic en el siguiente enlace:</p>
+      <a href="${url}">Verificar cuenta</a>
+      <p>Este enlace expira en 30 minutos.</p>
+    `;
+    await sendEmail(email, 'Verifica tu cuenta - MiAgenda', html);
+  } catch (error) {
+    throw new Error(`Failed to send verification email: ${error.message}`);
+  }
 };
 
 const sendConfirmationEmail = async (email, appointmentId, token) => {

@@ -9,19 +9,19 @@ const router = express.Router();
 const prisma = new PrismaClient();
 
 const businessUpdateSchema = Joi.object({
-  name: Joi.string().max(100).optional(),
-  logo: Joi.string().max(255).optional(),
+  name: Joi.string().max(100).allow('', null).optional(),
+  logo: Joi.string().max(255).allow('', null).optional(), // Explicitly allow empty string and null
   timezone: Joi.string().max(50).optional()
 });
 
 const userUpdateSchema = Joi.object({
   name: Joi.string().max(100).optional(),
-  phone: Joi.string().max(20).optional()
+  phone: Joi.string().max(20).allow('', null).optional()
 });
 
 const branchSchema = Joi.object({
   name: Joi.string().max(100).required(),
-  address: Joi.string().max(255).optional()
+  address: Joi.string().max(255).allow('', null).optional()
 });
 
 const workerSchema = Joi.object({
@@ -116,7 +116,11 @@ router.put('/business/update', async (req, res) => {
     await prisma.$transaction([
       prisma.business.update({
         where: { id: user.business.id },
-        data: value
+        data: {
+          name: value.name || undefined,
+          logo: value.logo || null, // Ensure logo is null if not provided
+          timezone: value.timezone || undefined
+        }
       }),
       prisma.auditLog.create({
         data: {
