@@ -50,9 +50,10 @@ router.post('/register', registerLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const businessNameDefault = isBusiness ? businessName || `Agenda de ${username}` : `Agenda de ${name || username}`;
     const token = uuidv4();
+    console.log(`Generated verification token for ${email}: ${token}`); // Debug log
 
-    // Perform all operations in a transaction, including email sending
-    const result = await prisma.$transaction(async (tx) => {
+    // Perform all operations in a transaction
+    await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
           email,
@@ -109,22 +110,13 @@ router.post('/register', registerLimiter, async (req, res) => {
         }
       });
 
-      // Send verification email within transaction
       await sendVerificationEmail(email, token);
-
-      return { user };
     });
 
-    // Generate JWT
-    const tokenJwt = jwt.sign(
-      { userId: result.user.id, isBusiness, username: username.toLowerCase() },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    res.json({ token: tokenJwt });
+    res.json({ message: 'Verification email sent successfully' });
   } catch (error) {
-    console.error(error);
-    if (error.message.includes('Failed to send email')) {
+    console.error('Registration error:', error);
+    if (error.message.includes('Failed to send verification email')) {
       return res.status(503).json({ error: 'Failed to send verification email, please try again later' });
     }
     res.status(500).json({ error: 'Registration failed' });
@@ -133,22 +125,40 @@ router.post('/register', registerLimiter, async (req, res) => {
 
 router.get('/verify', async (req, res) => {
   const { token } = req.query;
-  if (!token) return res.status(400).json({ error: 'Token required' });
+  if (!token) {
+    console.log('No token provided in /auth/verify');
+    return res.status(400).json({ error: 'Token is required' });
+  }
 
   try {
-    const verificationToken = await prisma.verificationToken.findUnique({ where: { token } });
-    if (!verificationToken) return res.status(400).json({ error: 'Invalid token' });
+    console.log(`Attempting to verify token: ${token}`); // Debug log
+    const verificationToken = await prisma.verificationToken.findUnique({
+      where: { token: String(token) } // Ensure token is treated as string
+    });
+
+    if (!verificationToken) {
+      console.log('Token not found in database');
+      return res.status(400).json({ error: 'Invalid or expired token' });
+    }
+
     if (verificationToken.expiresAt < new Date()) {
-      return res.status(400).json({ error: 'Token expired, please request a new one' });
+      console.log(`Token expired for userId: ${verificationToken.userId}`);
+      await prisma.verificationToken.delete({ where: { token } });
+      return res.status(400).json({ error: 'Token has expired, please request a new verification email' });
     }
 
     await prisma.$transaction([
-      prisma.user.update({ where: { id: verificationToken.userId }, data: { isVerified: true } }),
+      prisma.user.update({
+        where: { id: verificationToken.userId },
+        data: { isVerified: true }
+      }),
       prisma.verificationToken.delete({ where: { token } })
     ]);
 
-    res.json({ message: 'Account verified successfully' });
+    console.log(`User ${verificationToken.userId} verified successfully`);
+    res.json({ message: 'Account verified successfully. Please log in to continue.' });
   } catch (error) {
+    console.error('Verification error:', error);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
@@ -166,6 +176,7 @@ router.post('/resend-verification', resendLimiter, async (req, res) => {
     await prisma.$transaction(async (tx) => {
       await tx.verificationToken.deleteMany({ where: { userId: user.id } });
       const token = uuidv4();
+      console.log(`Generated resend verification token for ${email}: ${token}`); // Debug log
       await tx.verificationToken.create({
         data: {
           token,
@@ -178,8 +189,8 @@ router.post('/resend-verification', resendLimiter, async (req, res) => {
 
     res.json({ message: 'Verification email sent' });
   } catch (error) {
-    console.error(error);
-    if (error.message.includes('Failed to send email')) {
+    console.error('Resend verification error:', error);
+    if (error.message.includes('Failed to send verification email')) {
       return res.status(503).json({ error: 'Failed to send verification email, please try again later' });
     }
     res.status(500).json({ error: 'Failed to resend verification email' });
@@ -211,6 +222,7 @@ router.post('/login', async (req, res) => {
 
     res.json({ token, refreshToken });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
   }
 });
@@ -242,6 +254,7 @@ router.post('/refresh', async (req, res) => {
 
     res.json({ token: newToken, refreshToken: newRefreshToken });
   } catch (error) {
+    console.error('Refresh token error:', error);
     res.status(500).json({ error: 'Token refresh failed' });
   }
 });
@@ -273,6 +286,7 @@ router.get('/me', async (req, res) => {
       worker: user.worker[0] || null
     });
   } catch (error) {
+    console.error('Me endpoint error:', error);
     res.status(401).json({ error: 'Invalid token' });
   }
 });

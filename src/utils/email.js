@@ -23,7 +23,9 @@ const sendEmail = async (to, subject, html, retries = 3, delay = 1000) => {
 
 const sendVerificationEmail = async (email, token) => {
   try {
-    const url = `${process.env.FRONTEND_URL}/verify?token=${token}`;
+    const encodedToken = encodeURIComponent(token); // Ensure URL-safe token
+    const url = `${process.env.FRONTEND_URL}/verify?token=${encodedToken}`;
+    console.log(`Sending verification email to ${email} with link: ${url}`); // Debug log
     const html = `
       <h2>Verifica tu cuenta</h2>
       <p>Por favor, verifica tu correo electrónico haciendo clic en el siguiente enlace:</p>
@@ -37,7 +39,9 @@ const sendVerificationEmail = async (email, token) => {
 };
 
 const sendConfirmationEmail = async (email, appointmentId, token) => {
-  const url = `${process.env.FRONTEND_URL}/appointments/${appointmentId}?token=${token}`;
+  const encodedToken = encodeURIComponent(token);
+  const url = `${process.env.FRONTEND_URL}/appointments/${appointmentId}?token=${encodedToken}`;
+  console.log(`Sending confirmation email to ${email} with link: ${url}`); // Debug log
   const html = `
     <h2>Confirmación de cita</h2>
     <p>Tu cita ha sido creada exitosamente. Puedes gestionarla aquí:</p>
