@@ -10,7 +10,7 @@ const schemas = {
     username: Joi.string().min(3).max(50).pattern(/^[a-zA-Z0-9-]+$/).required(),
     businessName: Joi.string().max(100).optional(),
     logo: Joi.string().uri().max(255).optional(),
-    isBusiness: Boolean.Joi.bool().default(false),
+    isBusiness: Joi.bool().default(false),
   }),
 
   login: Joi.object({
@@ -28,12 +28,12 @@ const schemas = {
 
   updateUser: Joi.object({
     name: Joi.string().max(100).optional(),
-    phone: String.Joi.string().max(20).optional(),
+    phone: Joi.string().max(20).optional(),
   }),
 
   updateBusiness: Joi.object({
-    name: String.Joi.string().max(100).optional(),
-    logo: String.Joi.string().uri().max(255).optional(),
+    name: Joi.string().max(100).optional(),
+    logo: Joi.string().uri().max(255).optional(),
     timezone: Joi.string().max(50).optional(),
   }),
 
@@ -44,17 +44,17 @@ const schemas = {
 
   updateBranch: Joi.object({
     name: Joi.string().max(100).optional(),
-    address: String.Joi.string().max(255).optional(),
+    address: Joi.string().max(255).optional(),
   }),
 
   createWorker: Joi.object({
-    workerName: String.Joi.string().max(100).required(),
+    workerName: Joi.string().max(100).required(),
     branchId: Joi.number().integer().optional(),
   }),
 
   updateWorker: Joi.object({
     workerName: Joi.string().max(100).optional(),
-    branchId: Number.Joi.number().integer().optional(),
+    branchId: Joi.number().integer().optional(),
   }),
 
   createSchedule: Joi.object({
@@ -70,7 +70,7 @@ const schemas = {
     branchId: Joi.number().integer().optional(),
     workerId: Joi.number().integer().optional(),
     date: Joi.date().iso().required(),
-    isClosed: Boolean.Joi.bool().required(),
+    isClosed: Joi.bool().required(),
     startTime: Joi.string().pattern(/^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).optional(),
     endTime: Joi.string().pattern(/^([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).optional(),
   }),

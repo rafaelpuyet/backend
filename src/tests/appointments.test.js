@@ -99,11 +99,11 @@ describe('Appointment Routes', () => {
         .send({ status: 'confirmed' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Invalid status transition');
+      expect(res.body.error).toBe('Transición de estado inválida');
     });
   });
 
-  describe('GET /audit-logs', () => {
+  describe('GET /appointments/audit-logs', () => {
     it('should get audit logs successfully', async () => {
       await prisma.auditLog.create({
         data: {
@@ -115,7 +115,7 @@ describe('Appointment Routes', () => {
       });
 
       const res = await request(app)
-        .get('/audit-logs')
+        .get('/appointments/audit-logs')
         .set('Authorization', `Bearer ${token}`)
         .query({ entity: 'Appointment' });
 

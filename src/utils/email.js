@@ -3,15 +3,15 @@ const nodemailer = require('nodemailer');
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.EMAIL_ADDRESS,
-    pass: process.env.PASSWORD
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
 });
 
 async function sendEmail({ to, subject, template, data }) {
   const html = renderTemplate(template, data);
   const mailOptions = {
-    from: process.env.EMAIL_ADDRESS,
+    from: process.env.EMAIL_USER,
     to,
     subject,
     html,
@@ -24,7 +24,7 @@ async function sendEmail({ to, subject, template, data }) {
     } catch (err) {
       console.error(`Email attempt ${attempt} failed: ${err}`);
       if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, attempt * 1000 * attempt * 1000));
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
       }
     }
   }
@@ -35,19 +35,19 @@ function renderTemplate(template, data) {
   switch (template) {
     case 'verification':
       return `
-        <h1>Verify Your Email</h1>
-        <p>Click <a href="${process.env.FRONTEND_URL}/verify-email?token=${data.token}">here</a> to verify your email.</p>
-        <p>Expires in 30 minutes.</p>
+        <h1>Verifica tu correo</h1>
+        <p>Haz clic <a href="${process.env.FRONTEND_URL}/verify-email?token=${data.token}">aquí</a> para verificar tu correo.</p>
+        <p>Expira en 30 minutos.</p>
       `;
     case 'confirmation':
       return `
-        <h1>Confirmar tu cita</h1>
-        <p>Tu cita para ${data.businessName} el ${data.date} a las ${data.time} está reservada.</p>
-        <p>Usa este enlace para gestionar tu cita: <a href="${process.env.FRONTEND_URL}/appointments/${data.appointmentId}/manage?token=${data.token}">Gestionar Cita</a></p>
+        <h1>Confirmación de Cita</h1>
+        <p>Tu cita con ${data.businessName} el ${data.date} a las ${data.time} está reservada.</p>
+        <p>Gestiona tu cita aquí: <a href="${process.env.FRONTEND_URL}/appointments/${data.appointmentId}/manage?token=${data.token}">Gestionar Cita</a></p>
       `;
     case 'reminder':
       return `
-        <h1>Recordatorio de tu cita</h1>
+        <h1>Recordatorio de Cita</h1>
         <p>Tienes una cita con ${data.businessName} el ${data.date} a las ${data.time}.</p>
       `;
     case 'cancellation':

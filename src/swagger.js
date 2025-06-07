@@ -6,9 +6,18 @@ const options = {
     info: {
       title: 'Agenda Management API',
       version: '3.0.0',
-      description: 'API for managing business and individual agendas',
+      description: 'API para la gestión de agendas de negocios e individuales en Chile',
     },
     servers: [{ url: `http://localhost:${process.env.PORT || 3000}` }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        },
+      },
+    },
   },
   apis: ['./src/routes/*.js'],
 };

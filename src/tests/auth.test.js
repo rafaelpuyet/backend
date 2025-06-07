@@ -100,7 +100,7 @@ describe('Auth Routes', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toContain('Email or username already exists');
+      expect(res.body.error).toContain('Email o username ya existen');
     });
 
     it('should fail with invalid username', async () => {
@@ -140,7 +140,7 @@ describe('Auth Routes', () => {
       const res = await request(app).get('/auth/verify').query({ token: 'valid-token' });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Account verified successfully');
+      expect(res.body.message).toBe('Cuenta verificada exitosamente');
 
       const updatedUser = await prisma.user.findUnique({ where: { id: user.id } });
       expect(updatedUser.isVerified).toBe(true);
@@ -150,7 +150,7 @@ describe('Auth Routes', () => {
       const res = await request(app).get('/auth/verify').query({ token: 'invalid-token' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Invalid token');
+      expect(res.body.error).toBe('Token inválido');
     });
   });
 
@@ -170,7 +170,7 @@ describe('Auth Routes', () => {
         .send({ email: 'test@example.com' });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Verification email sent');
+      expect(res.body.message).toBe('Correo de verificación enviado');
 
       const token = await prisma.verificationToken.findFirst({ where: { userId: user.id } });
       expect(token).toBeDefined();
@@ -191,7 +191,7 @@ describe('Auth Routes', () => {
         .send({ email: 'test@example.com' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Account already verified');
+      expect(res.body.error).toBe('Cuenta ya verificada');
     });
   });
 
@@ -225,7 +225,7 @@ describe('Auth Routes', () => {
         .send({ email: 'test@example.com', password: 'wrong' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Invalid credentials');
+      expect(res.body.error).toBe('Credenciales inválidas');
     });
   });
 
@@ -265,7 +265,7 @@ describe('Auth Routes', () => {
         .send({ token: 'invalid-refresh-token' });
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe('Invalid refresh token');
+      expect(res.body.error).toBe('Token de refresco inválido');
     });
   });
 
@@ -316,7 +316,7 @@ describe('Auth Routes', () => {
       const res = await request(app).get('/auth/me');
 
       expect(res.status).toBe(401);
-      expect(res.body.error).toBe('Not authenticated');
+      expect(res.body.error).toBe('No autenticado');
     });
   });
 });

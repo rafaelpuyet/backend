@@ -65,7 +65,7 @@ describe('Public Routes', () => {
       const res = await request(app).get('/public/business/testuser');
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('No branches configured');
+      expect(res.body.error).toBe('No hay sucursales configuradas');
     });
   });
 
@@ -96,7 +96,7 @@ describe('Public Routes', () => {
         .query({ date: 'invalid' });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Invalid date');
+      expect(res.body.error).toBe('Fecha inválida');
     });
   });
 
@@ -159,7 +159,7 @@ describe('Public Routes', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Slot already booked');
+      expect(res.body.error).toBe('Horario ya reservado');
     });
   });
 
@@ -206,7 +206,7 @@ describe('Public Routes', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Appointment rescheduled successfully');
+      expect(res.body.message).toBe('Cita reprogramada exitosamente');
 
       const updatedAppointment = await prisma.appointment.findUnique({ where: { id: appointment.id } });
       expect(updatedAppointment.startTime).toEqual(new Date('2025-07-01T10:00:00-04:00'));
@@ -242,7 +242,7 @@ describe('Public Routes', () => {
         .send({ token: 'valid-token' });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Appointment cancelled successfully');
+      expect(res.body.message).toBe('Cita cancelada exitosamente');
 
       const updatedAppointment = await prisma.appointment.findUnique({ where: { id: appointment.id } });
       expect(updatedAppointment.status).toBe('cancelled');

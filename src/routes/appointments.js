@@ -3,84 +3,143 @@ const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const schemas = require('../utils/validation');
 const authenticate = require('../middleware/authenticate');
-const { sendEmail } = require('../utils/email');
 const moment = require('moment-timezone');
 const jwt = require('jsonwebtoken');
 
+/**
+ * @swagger
+ * /appointments/{id}:
+ *   put:
+ *     summary: Actualizar cita
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         schema:
+ *           type: integer
+ *         required: true
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               id: { type: integer }
+ *               startTime: { type: string, format: date-time }
+ *               endTime: { type: string, format: date-time }
+ *               status: { type: string, enum: [pending, confirmed, cancelled] }
+ *     responses:
+ *       200:
+ *         description: Appointment updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token: { type: string }
+ *       400:
+ *         description: Invalid input or status transition
+ *       404:
+ *         description: Appointment not found
+ */
 const prisma = new PrismaClient();
 
-// PUT /appointments/:id
 router.put('/:id', authenticate, async (req, res, next) => {
   try {
-    const { error, value } = schemas.updateAppointment.validate(req.body);
-    if (error) throw Object.assign(error, { statusCode: 400 });
+    const { error, value } = schemas.updateAppointment.validate({ id: parseInt(req.params.id), ...req.body });
+    if (error) {
+      const err = new Error(error.details[0].message);
+      err.statusCode = 400;
+      throw err;
+    }
 
-    const appointmentId = parseInt(req.params.id);
-    const appointment = await prisma.appointment.findUnique({ where: { id: appointmentId } });
-    if (!appointment) throw new Error('Appointment not found', { statusCode: 404 });
+    const { id, startTime, endTime, status } = value;
+    const appointment = await prisma.appointment.findUnique({ where: { id } });
+    if (!appointment) {
+      const err = new Error('Cita no encontrada');
+      err.statusCode = 404;
+      throw err;
+    }
 
     const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
     if (!business || appointment.businessId !== business.id) {
-      throw new Error('Unauthorized', { statusCode: 401 });
+      const err = new Error('No autorizado');
+      err.statusCode = 403;
+      throw err;
     }
 
-    const { startTime, endTime, status } = value;
-    const validTransitions = {
-      pending: ['confirmed', 'cancelled'],
-      confirmed: ['cancelled'],
-      cancelled: [],
-    };
-    if (status && !validTransitions[appointment.status].includes(status)) {
-      throw new Error('Invalid status transition', { statusCode: 400 });
+    if (status) {
+      const validTransitions = {
+        pending: ['confirmed', 'cancelled'],
+        confirmed: ['cancelled'],
+        cancelled: [],
+      };
+      if (!validTransitions[appointment.status].includes(status)) {
+        const err = new Error('Transición de estado inválida');
+        err.statusCode = 400;
+        throw err;
+      }
     }
+
+    if (startTime && endTime) {
+      const start = moment(startTime).tz(business.timezone);
+      const end = moment(endTime).tz(business.timezone);
+      if (start.isSameOrAfter(end)) {
+        const err = new Error('startTime debe ser antes que endTime');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const availableSlot = await prisma.availableSlots.findFirst({
+        where: {
+          businessId: business.id,
+          date: start.startOf('day').toDate(),
+          startTime: start.format('HH:mm:ss'),
+          endTime: end.format('HH:mm:ss'),
+        },
+      });
+      if (!availableSlot) {
+        const err = new Error('Horario no disponible');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const overlapping = await prisma.appointment.findFirst({
+        where: {
+          businessId: business.id,
+          id: { not: id },
+          status: { not: 'cancelled' },
+          startTime: { lte: end.toDate() },
+          endTime: { gte: start.toDate() },
+        },
+      });
+      if (overlapping) {
+        const err = new Error('Horario ocupado');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const data = {};
+    if (startTime) data.startTime = new Date(startTime);
+    if (endTime) data.endTime = new Date(endTime);
+    if (status) data.status = status;
 
     await prisma.$transaction(async (tx) => {
-      if (startTime && endTime) {
-        const existing = await tx.appointment.findFirst({
-          where: {
-            businessId: business.id,
-            startTime: new Date(startTime),
-            status: { not: 'cancelled' },
-            id: { not: appointmentId },
-          },
-          lock: 'UPDATE',
-        });
-        if (existing) throw new Error('Slot already booked', { statusCode: 400 });
-
-        await tx.appointment.update({
-          where: { id: appointmentId },
-          data: {
-            startTime: new Date(startTime),
-            endTime: new Date(endTime),
-            status: 'pending',
-          },
-        });
-      } else if (status) {
-        await tx.appointment.update({
-          where: { id: appointmentId },
-          data: { status },
-        });
-      }
+      await tx.appointment.update({
+        where: { id },
+        data,
+      });
 
       await tx.auditLog.create({
         data: {
           action: 'update',
           entity: 'Appointment',
-          entityId: appointmentId,
+          entityId: id,
           userId: req.user.userId,
-        },
-      });
-
-      await sendEmail({
-        to: appointment.clientEmail,
-        subject: status === 'cancelled' ? 'Cita Cancelada' : 'Cita Actualizada',
-        template: status === 'cancelled' ? 'cancellation' : 'confirmation',
-        data: {
-          businessName: business.name,
-          date: moment(startTime || appointment.startTime).format('DD-MM-YYYY'),
-          time: moment(startTime || appointment.startTime).format('HH:mm'),
-          appointmentId,
-          token: status !== 'cancelled' ? require('crypto').randomBytes(32).toString('hex') : undefined,
         },
       });
     });
@@ -97,25 +156,55 @@ router.put('/:id', authenticate, async (req, res, next) => {
   }
 });
 
-// GET /audit-logs
+/**
+ * @swagger
+ * /appointments/audit-logs:
+ *   get:
+ *     summary: Obtener registros de auditoría
+ *     tags: [Appointments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: entity
+ *         schema:
+ *           type: string
+ *         description: Filtrar por entidad (e.g., Appointment, User)
+ *       - in: query
+ *         name: entityId
+ *         schema:
+ *           type: integer
+ *         description: Filtrar por ID de entidad
+ *     responses:
+ *       200:
+ *         description: Audit logs retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 logs: { type: array, items: { type: object } }
+ *       403:
+ *         description: No autorizado
+ */
 router.get('/audit-logs', authenticate, async (req, res, next) => {
   try {
-    const { entity, entityId, action, startDate, endDate } = req.query;
     const business = await prisma.business.findUnique({ where: { userId: req.user.userId } });
-    if (!business) throw new Error('Business not found', { statusCode: 404 });
+    if (!business) {
+      const err = new Error('No autorizado');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const { entity, entityId } = req.query;
+    const where = { userId: req.user.userId };
+    if (entity) where.entity = entity;
+    if (entityId) where.entityId = parseInt(entityId);
 
     const logs = await prisma.auditLog.findMany({
-      where: {
-        entity: entity || undefined,
-        entityId: entityId ? parseInt(entityId) : undefined,
-        action: action || undefined,
-        createdAt: {
-          gte: startDate ? new Date(startDate) : undefined,
-          lte: endDate ? new Date(endDate) : undefined,
-        },
-      },
-      take: 100,
+      where,
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
 
     res.json({ logs });

@@ -73,10 +73,10 @@ describe('Business Routes', () => {
     });
   });
 
-  describe('POST /branches', () => {
+  describe('POST /business/branches', () => {
     it('should create branch successfully', async () => {
       const res = await request(app)
-        .post('/branches')
+        .post('/business/branches')
         .set('Authorization', `Bearer ${token}`)
         .send({ name: 'New Branch', address: '123 Street' });
 
@@ -104,28 +104,28 @@ describe('Business Routes', () => {
       );
 
       const res = await request(app)
-        .post('/branches')
+        .post('/business/branches')
         .set('Authorization', `Bearer ${nonBusinessToken}`)
         .send({ name: 'New Branch' });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('Only businesses can create branches');
+      expect(res.body.error).toBe('Solo negocios pueden crear sucursales');
     });
   });
 
-  describe('PUT /branches/:id', () => {
+  describe('PUT /business/branches/:id', () => {
     it('should update branch successfully', async () => {
       const branch = await prisma.branch.create({
         data: { businessId: business.id, name: 'Branch 1' },
       });
 
       const res = await request(app)
-        .put(`/branches/${branch.id}`)
+        .put(`/business/branches/${branch.id}`)
         .set('Authorization', `Bearer ${token}`)
         .send({ name: 'Updated Branch' });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Branch updated successfully');
+      expect(res.body.message).toBe('Sucursal actualizada exitosamente');
 
       const updatedBranch = await prisma.branch.findUnique({ where: { id: branch.id } });
       expect(updatedBranch.name).toBe('Updated Branch');
@@ -133,37 +133,37 @@ describe('Business Routes', () => {
 
     it('should fail with invalid branch ID', async () => {
       const res = await request(app)
-        .put('/branches/999')
+        .put('/business/branches/999')
         .set('Authorization', `Bearer ${token}`)
         .send({ name: 'Updated Branch' });
 
       expect(res.status).toBe(404);
-      expect(res.body.error).toBe('Branch not found');
+      expect(res.body.error).toBe('Sucursal no encontrada');
     });
   });
 
-  describe('DELETE /branches/:id', () => {
+  describe('DELETE /business/branches/:id', () => {
     it('should delete branch successfully', async () => {
       const branch = await prisma.branch.create({
         data: { businessId: business.id, name: 'Branch 1' },
       });
 
       const res = await request(app)
-        .delete(`/branches/${branch.id}`)
+        .delete(`/business/branches/${branch.id}`)
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Branch deleted successfully');
+      expect(res.body.message).toBe('Sucursal eliminada exitosamente');
 
       const deletedBranch = await prisma.branch.findUnique({ where: { id: branch.id } });
       expect(deletedBranch).toBeNull();
     });
   });
 
-  describe('POST /workers', () => {
+  describe('POST /business/workers', () => {
     it('should create worker successfully', async () => {
       const res = await request(app)
-        .post('/workers')
+        .post('/business/workers')
         .set('Authorization', `Bearer ${token}`)
         .send({ workerName: 'New Worker' });
 
@@ -175,19 +175,19 @@ describe('Business Routes', () => {
     });
   });
 
-  describe('PUT /workers/:id', () => {
+  describe('PUT /business/workers/:id', () => {
     it('should update worker successfully', async () => {
       const worker = await prisma.worker.create({
         data: { businessId: business.id, workerName: 'Worker 1' },
       });
 
       const res = await request(app)
-        .put(`/workers/${worker.id}`)
+        .put(`/business/workers/${worker.id}`)
         .set('Authorization', `Bearer ${token}`)
         .send({ workerName: 'Updated Worker' });
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Worker updated successfully');
+      expect(res.body.message).toBe('Trabajador actualizado exitosamente');
 
       const updatedWorker = await prisma.worker.findUnique({ where: { id: worker.id } });
       expect(updatedWorker.workerName).toBe('Updated Worker');
@@ -199,27 +199,27 @@ describe('Business Routes', () => {
       });
 
       const res = await request(app)
-        .put(`/workers/${worker.id}`)
+        .put(`/business/workers/${worker.id}`)
         .set('Authorization', `Bearer ${token}`)
         .send({ workerName: 'Updated Owner' });
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('Cannot modify owner worker');
+      expect(res.body.error).toBe('No se puede modificar trabajador propietario');
     });
   });
 
-  describe('DELETE /workers/:id', () => {
+  describe('DELETE /business/workers/:id', () => {
     it('should delete worker successfully', async () => {
       const worker = await prisma.worker.create({
         data: { businessId: business.id, workerName: 'Worker 1' },
       });
 
       const res = await request(app)
-        .delete(`/workers/${worker.id}`)
+        .delete(`/business/workers/${worker.id}`)
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe('Worker deleted successfully');
+      expect(res.body.message).toBe('Trabajador eliminado exitosamente');
 
       const deletedWorker = await prisma.worker.findUnique({ where: { id: worker.id } });
       expect(deletedWorker).toBeNull();
@@ -231,18 +231,18 @@ describe('Business Routes', () => {
       });
 
       const res = await request(app)
-        .delete(`/workers/${worker.id}`)
+        .delete(`/business/workers/${worker.id}`)
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(403);
-      expect(res.body.error).toBe('Cannot delete owner worker');
+      expect(res.body.error).toBe('No se puede eliminar trabajador propietario');
     });
   });
 
-  describe('POST /schedules', () => {
+  describe('POST /business/schedules', () => {
     it('should create schedule successfully', async () => {
       const res = await request(app)
-        .post('/schedules')
+        .post('/business/schedules')
         .set('Authorization', `Bearer ${token}`)
         .send({
           dayOfWeek: 1,
@@ -270,7 +270,7 @@ describe('Business Routes', () => {
       });
 
       const res = await request(app)
-        .post('/schedules')
+        .post('/business/schedules')
         .set('Authorization', `Bearer ${token}`)
         .send({
           dayOfWeek: 1,
@@ -280,14 +280,14 @@ describe('Business Routes', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Overlapping schedule exists');
+      expect(res.body.error).toBe('Existe un horario superpuesto');
     });
   });
 
-  describe('POST /exceptions', () => {
+  describe('POST /business/exceptions', () => {
     it('should create exception successfully', async () => {
       const res = await request(app)
-        .post('/exceptions')
+        .post('/business/exceptions')
         .set('Authorization', `Bearer ${token}`)
         .send({
           date: '2025-07-01',
