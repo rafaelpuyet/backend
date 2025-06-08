@@ -50,7 +50,7 @@ router.post('/register', registerLimiter, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const businessNameDefault = isBusiness ? businessName || `Agenda de ${username}` : `Agenda de ${name || username}`;
     const token = uuidv4();
-    console.log(`Generated verification token for ${email}: ${token}`); // Debug log
+    console.log(`Generated verification token for ${email}: ${token}`);
 
     // Perform all operations in a transaction
     await prisma.$transaction(async (tx) => {
@@ -131,9 +131,9 @@ router.get('/verify', async (req, res) => {
   }
 
   try {
-    console.log(`Attempting to verify token: ${token}`); // Debug log
+    console.log(`Attempting to verify token: ${token}`);
     const verificationToken = await prisma.verificationToken.findUnique({
-      where: { token: String(token) } // Ensure token is treated as string
+      where: { token: String(token) }
     });
 
     if (!verificationToken) {
@@ -176,7 +176,7 @@ router.post('/resend-verification', resendLimiter, async (req, res) => {
     await prisma.$transaction(async (tx) => {
       await tx.verificationToken.deleteMany({ where: { userId: user.id } });
       const token = uuidv4();
-      console.log(`Generated resend verification token for ${email}: ${token}`); // Debug log
+      console.log(`Generated resend verification token for ${email}: ${token}`);
       await tx.verificationToken.create({
         data: {
           token,
@@ -268,8 +268,14 @@ router.get('/me', async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
       include: {
-        business: true,
-        worker: { where: { isOwner: true } }
+        business: {
+          include: {
+            workers: {
+              where: { isOwner: true },
+              take: 1 // Limit to one owner worker
+            }
+          }
+        }
       }
     });
 
@@ -283,7 +289,7 @@ router.get('/me', async (req, res) => {
       username: user.username,
       isBusiness: user.isBusiness,
       business: user.business,
-      worker: user.worker[0] || null
+      worker: user.business?.workers[0] || null // Map first owner worker or null
     });
   } catch (error) {
     console.error('Me endpoint error:', error);
